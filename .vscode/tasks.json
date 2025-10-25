@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Snake (Build+Run)",
+			"type": "shell",
+			"command": "g++ \"d:\\ByteHebi\\source\\main.cpp\" \"d:\\ByteHebi\\source\\game.cpp\" \"d:\\ByteHebi\\source\\snake.cpp\" \"d:\\ByteHebi\\source\\fruit.cpp\" -I\"d:\\ByteHebi\\includes\" -std=c++17 -O2 -o \"d:\\ByteHebi\\snake.exe\"; \"d:\\ByteHebi\\snake.exe\"",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		}
+	]
+}
