@@ -419,17 +419,60 @@ int Game::run()
 #else
             bool restart = false;
             bool quit = false;
-            int ch;
-            while ((ch = ::getchar()) != EOF)
+            // POSIX/WSL: temporarily restore cooked mode and do blocking reads for prompt
+            if (g_termConfigured)
             {
+                tcsetattr(STDIN_FILENO, TCSANOW, &g_origTerm);
+                if (g_origFlags != -1)
+                    fcntl(STDIN_FILENO, F_SETFL, g_origFlags);
+                g_termConfigured = false;
+            }
+
+            // Blocking read until a valid key is pressed
+            while (!restart && !quit)
+            {
+                int ch = getchar(); // blocking in cooked mode
+                if (ch == EOF)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    continue;
+                }
+
+                // Optional runtime debug to see what code we get
+                const char *dbg = std::getenv("BYTEHEBI_KEY_DEBUG");
+                if (dbg)
+                {
+                    std::cerr << "DEBUG: prompt got char code=" << ch << " ('";
+                    if (isprint(ch))
+                        std::cerr << (char)ch;
+                    else
+                        std::cerr << '?';
+                    std::cerr << "')\n";
+                }
+
                 if (ch == 'r' || ch == 'R')
                     restart = true;
-                if (ch == 'q' || ch == 'Q' || ch == 'x' || ch == 'X')
+                else if (ch == 'q' || ch == 'Q')
+                    quit = true;
+                else if (ch == 'x' || ch == 'X')
                 {
                     quit = true;
-                    if (ch == 'x' || ch == 'X')
-                        exitRequested = true;
+                    exitRequested = true;
                 }
+            }
+
+            // Re-enable raw non-blocking mode for gameplay
+            if (tcgetattr(STDIN_FILENO, &g_origTerm) == 0)
+            {
+                termios raw = g_origTerm;
+                raw.c_lflag &= ~(ICANON | ECHO);
+                raw.c_cc[VMIN] = 0;
+                raw.c_cc[VTIME] = 0;
+                tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+                int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+                if (flags != -1)
+                    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+                g_termConfigured = true;
             }
 #endif
             if (restart)

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Simple Snake
 
 A simple console-based Snake game written in C++ using POSIX termios for input.
@@ -35,4 +36,6 @@ Notes:
 - Input uses POSIX termios in raw, non-blocking mode and ANSI escape codes for screen clearing. On native Windows cmd/PowerShell, build and run via WSL or MSYS2/Cygwin.
 
 
+
+=======
 
