@@ -1,28 +1,36 @@
-<<<<<<< HEAD
-# Simple Snake
+# ByteHebi Snake (Linux, Notcurses + POSIX)
 
-A simple console-based Snake game written in C++ using POSIX termios for input.
+Linux-only terminal Snake game using Notcurses for rendering and POSIX termios for nonblocking input.
 
 ## Features
 
-- Grid-based playfield with walls
-- Snake starts with length 3
-- WASD or Arrow Keys to control
-- Food spawns randomly; eating increases length and score
-- Game over on self or wall collision
-- Score displayed during play; restart or quit after game over
+- Grid with walls; snake grows on fruit
+- Arrow keys or WASD
+- Score and persistent high score (`highscore.txt`)
+- Smooth TUI rendering with Notcurses (Linux/WSL)
 
 ## Build
 
-Linux/macOS (Terminal), or Windows via WSL/MSYS2/Cygwin:
+Prerequisites (Ubuntu/Debian):
 
 ```bash
-g++ source/main.cpp source/game.cpp source/snake.cpp source/fruit.cpp -I includes -std=c++17 -O2 -o snake
+sudo apt-get update
+sudo apt-get install -y build-essential libnotcurses-dev pkg-config
 ```
 
-Windows options:
-- WSL (Ubuntu): use the Linux command above targeting your WSL path (e.g., /mnt/d/ByteHebi/... ).
-- MSYS2/Cygwin: use the same g++ command in the MSYS2/Cygwin shell.
+Compile (recommended with pkg-config to get all required libs):
+
+```bash
+g++ source/main.cpp source/game.cpp source/snake.cpp source/fruit.cpp -I includes -std=c++17 -O2 $(pkg-config --cflags --libs notcurses) -o snake
+```
+
+If pkg-config is unavailable, link both libraries explicitly:
+
+```bash
+g++ source/main.cpp source/game.cpp source/snake.cpp source/fruit.cpp -I includes -std=c++17 -O2 -lnotcurses -lnotcurses-core -o snake
+```
+
+This repo now targets Linux only. Use WSL if you’re on Windows and run the Linux commands above from your project directory under `/mnt/d/ByteHebi`.
 
 ## Run
 
@@ -30,12 +38,11 @@ Windows options:
 ./snake
 ```
 
-Controls: WASD or Arrow Keys. Press R to restart, Q to quit on game over.
+Controls: Arrow keys or WASD. Press `q` to quit.
 
-Notes:
-- Input uses POSIX termios in raw, non-blocking mode and ANSI escape codes for screen clearing. On native Windows cmd/PowerShell, build and run via WSL or MSYS2/Cygwin.
+## Notes
 
+- If your terminal is smaller than the configured game size (40x20 from `source/main.cpp`), the game will ask you to resize or adjust the width/height.
+- High score is stored in `highscore.txt` in the working directory.
 
-
-=======
 
