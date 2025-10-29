@@ -14,12 +14,34 @@ public:
     int run();
 
 private:
+    enum class SnakeGlyphStyle
+    {
+        Light,
+        Heavy,
+        Rounded,
+        Scales,
+        DoubleLine,
+        Block,
+        Arrow,
+        Dotted,
+        Braille
+    };
+    enum class DialogType
+    {
+        None,
+        Pause,
+        GameOver
+    };
     void processInput();
     void update();
     void render() const;
-    void gameOverScreen() const;
+    void gameOverScreen() const; // legacy; not used in non-blocking flow
     void reset();
     void chooseDifficulty();
+    void loadHighScore();
+    void saveHighScore();
+    void openDialog(DialogType t);
+    void closeDialog();
 
     int width;
     int height;
@@ -28,6 +50,13 @@ private:
     int score{0};
     bool over{false};
     bool exitRequested{false};
+    bool paused{false};
+    bool dialogOpen{false};
+    DialogType dialogType{DialogType::None};
+    int dialogIndex{0};
     std::string playerName{"Player"};
     int tickMs{120};
+    int highScore{0};
+    std::string highScoreFile{"highscore.txt"};
+    SnakeGlyphStyle snakeStyle{SnakeGlyphStyle::Heavy};
 };

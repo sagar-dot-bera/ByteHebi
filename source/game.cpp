@@ -1,539 +1,717 @@
-// Clean, cross-platform implementation of Game using Windows or POSIX input
-
+// Snake game using Notcurses for rendering and POSIX (termios) input
 #include "game.h"
-#include <iostream>
-#include <vector>
-#include <string>
-#include <thread>
+#include <fstream>
 #include <chrono>
-#include <cstdio>
-#include <limits>
+#include <thread>
+#include <algorithm>
+#include <clocale>
+#include <cstdint>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <conio.h>
-#else
-#include <termios.h>
+// Linux/WSL: Notcurses
+#include <notcurses/notcurses.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <sys/select.h>
-#endif
 
-static constexpr char WALL_CHAR = '#';
-static constexpr char SNAKE_HEAD_CHAR = 'O';
-static constexpr char SNAKE_BODY_CHAR = 'o';
-static constexpr char FRUIT_CHAR = '*';
+// ----------------------
+// Helpers (platform-agnostic)
+// ----------------------
+namespace
+{
+    constexpr char WALL_CHAR = '#';
+    constexpr char SNAKE_HEAD_CHAR = '@';
+    constexpr char SNAKE_BODY_CHAR = 'O';
+    constexpr char FRUIT_CHAR = '*';
+}
 
-#ifndef _WIN32
-// Terminal configuration state (POSIX)
-static termios g_origTerm;
-static int g_origFlags = -1;
-static bool g_termConfigured = false;
-#else
-// Console input configuration state (Windows)
-static HANDLE g_hIn = INVALID_HANDLE_VALUE;
-static DWORD g_origInMode = 0;
-static bool g_inputConfigured = false;
-#endif
-
+// ----------------------
+// Game lifecycle
+// ----------------------
 Game::Game(int width, int height, const std::string &name)
     : width(width), height(height),
-      snake(width / 2, height / 2, 3), fruit(width, height)
+      snake(width / 2, height / 2, 3),
+      fruit(width, height),
+      playerName(name)
 {
-    playerName = name;
-    // place initial fruit not overlapping snake
+    loadHighScore();
+    chooseDifficulty();
+    // Ensure fruit not on snake at start
     fruit.respawn([&](const Point &p)
                   { return snake.contains(p); });
-
-#ifndef _WIN32
-    // Set terminal to raw, non-blocking mode for immediate key reads (POSIX)
-    if (!g_termConfigured)
-    {
-        if (tcgetattr(STDIN_FILENO, &g_origTerm) == 0)
-        {
-            termios raw = g_origTerm;
-            raw.c_lflag &= ~(ICANON | ECHO);
-            raw.c_cc[VMIN] = 0;
-            raw.c_cc[VTIME] = 0;
-            tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-            g_origFlags = fcntl(STDIN_FILENO, F_GETFL, 0);
-            if (g_origFlags != -1)
-            {
-                fcntl(STDIN_FILENO, F_SETFL, g_origFlags | O_NONBLOCK);
-            }
-            g_termConfigured = true;
-        }
-    }
-#else
-    // Configure Windows console input: disable Quick Edit to avoid input freezing
-    if (!g_inputConfigured)
-    {
-        g_hIn = GetStdHandle(STD_INPUT_HANDLE);
-        if (g_hIn != INVALID_HANDLE_VALUE && GetConsoleMode(g_hIn, &g_origInMode))
-        {
-            DWORD mode = g_origInMode;
-            // To change extended flags, you must set ENABLE_EXTENDED_FLAGS first
-            SetConsoleMode(g_hIn, mode | ENABLE_EXTENDED_FLAGS);
-            mode &= ~ENABLE_QUICK_EDIT_MODE; // disable quick edit so mouse selection won't freeze app
-            SetConsoleMode(g_hIn, mode | ENABLE_EXTENDED_FLAGS);
-            g_inputConfigured = true;
-        }
-    }
-#endif
 }
 
 Game::~Game()
 {
-#ifndef _WIN32
-    // Restore terminal settings if we changed them (POSIX)
-    if (g_termConfigured)
-    {
-        tcsetattr(STDIN_FILENO, TCSANOW, &g_origTerm);
-        if (g_origFlags != -1)
-        {
-            fcntl(STDIN_FILENO, F_SETFL, g_origFlags);
-        }
-        g_termConfigured = false;
-    }
-#else
-    // Restore Windows console input mode
-    if (g_inputConfigured && g_hIn != INVALID_HANDLE_VALUE)
-    {
-        SetConsoleMode(g_hIn, g_origInMode);
-        g_inputConfigured = false;
-    }
-#endif
+    saveHighScore();
 }
 
-void Game::reset()
+// -------------- Globals & helpers --------------
+namespace
 {
-    snake = Snake(width / 2, height / 2, 3);
-    score = 0;
-    over = false;
-    exitRequested = false;
-    fruit = Fruit(width, height);
-    fruit.respawn([&](const Point &p)
-                  { return snake.contains(p); });
+    // Keep Notcurses handles accessible to const render/gameOver functions
+    static notcurses *g_nc = nullptr;
+    static ncplane *g_stdp = nullptr;
+    inline void set_fg(ncplane *n, uint8_t r, uint8_t g, uint8_t b) { ncplane_set_fg_rgb8(n, r, g, b); }
+    inline void set_bg_default(ncplane *n) { ncplane_set_bg_default(n); }
+    inline void set_style(ncplane *n, uint16_t s) { ncplane_set_styles(n, s); }
+    inline void clear_style(ncplane *n) { ncplane_set_styles(n, 0); }
+}
+
+int Game::run()
+{
+    // Initialize Notcurses
+    setlocale(LC_ALL, "");
+    notcurses_options opts{}; // defaults
+    struct notcurses *nc = notcurses_init(&opts, nullptr);
+    if (!nc)
+    {
+        return 1;
+    }
+    ncplane *stdp = notcurses_stdplane(nc);
+    // store for later renders
+    g_nc = nc;
+    g_stdp = stdp;
+
+    // Make sure our target area fits in the terminal
+    unsigned termh = 0, termw = 0;
+    ncplane_dim_yx(stdp, &termh, &termw);
+    if (height > termh || width > termw)
+    {
+        ncplane_putstr_yx(stdp, 0, 0, "Terminal too small for configured game size.");
+        ncplane_putstr_yx(stdp, 1, 0, "Resize terminal or adjust width/height.");
+        notcurses_render(nc);
+        notcurses_stop(nc);
+        return 1;
+    }
+
+    auto lastTick = std::chrono::steady_clock::now();
+
+    while (!exitRequested)
+    {
+        // Input
+        processInput();
+
+        // Tick based on tickMs when not paused and not over
+        if (!paused && !over)
+        {
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTick).count() >= tickMs)
+            {
+                lastTick = now;
+                update();
+            }
+        }
+
+        // Render
+        render();
+        notcurses_render(nc);
+
+        // Small sleep to avoid busy loop
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    notcurses_stop(nc);
+    return score;
 }
 
 void Game::processInput()
 {
-#ifdef _WIN32
-    // Windows: read console input events (non-blocking)
-    if (g_hIn == INVALID_HANDLE_VALUE)
+    if (!g_nc)
         return;
-    INPUT_RECORD records[16];
-    DWORD count = 0;
-    while (PeekConsoleInput(g_hIn, records, 16, &count) && count > 0)
-    {
-        // Remove them from the queue
-        if (!ReadConsoleInput(g_hIn, records, count, &count))
-            break;
-        for (DWORD i = 0; i < count; ++i)
-        {
-            const INPUT_RECORD &rec = records[i];
-            if (rec.EventType == KEY_EVENT && rec.Event.KeyEvent.bKeyDown)
-            {
-                WORD vk = rec.Event.KeyEvent.wVirtualKeyCode;
-                switch (vk)
-                {
-                case VK_UP:
-                case 'W':
-                    snake.setDirection(Direction::Up);
-                    break;
-                case VK_DOWN:
-                case 'S':
-                    snake.setDirection(Direction::Down);
-                    break;
-                case VK_LEFT:
-                case 'A':
-                    snake.setDirection(Direction::Left);
-                    break;
-                case VK_RIGHT:
-                case 'D':
-                    snake.setDirection(Direction::Right);
-                    break;
-                case 'X':
-                    over = true;
-                    exitRequested = true;
-                    break;
-                default:
-                    break;
-                }
-            }
-        }
-        // Check if more events are pending
-        count = 0;
-    }
-    // Fallback: also poll keys in case events are not delivered in this console
-    auto isKey = [](int vk)
-    { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
-    if (isKey(VK_UP) || isKey('W'))
-        snake.setDirection(Direction::Up);
-    else if (isKey(VK_DOWN) || isKey('S'))
-        snake.setDirection(Direction::Down);
-    else if (isKey(VK_LEFT) || isKey('A'))
-        snake.setDirection(Direction::Left);
-    else if (isKey(VK_RIGHT) || isKey('D'))
-        snake.setDirection(Direction::Right);
-    if (isKey('X'))
-    {
-        over = true;
-        exitRequested = true;
-    }
-#else
-    // POSIX/WSL: use select() to read available input bytes and parse sequences
+    ncinput ni{};
+    // Drain all pending inputs non-blocking
     while (true)
     {
-        fd_set set;
-        FD_ZERO(&set);
-        FD_SET(STDIN_FILENO, &set);
-        timeval tv{0, 0};
-        int rv = select(STDIN_FILENO + 1, &set, nullptr, nullptr, &tv);
-        if (rv <= 0)
-            break; // no more input available this frame
+        uint32_t key = notcurses_get_nblock(g_nc, &ni);
+        if (key == 0u)
+            break; // no input available
+        if (key == (uint32_t)-1)
+            break; // error
 
-        unsigned char buf[16];
-        ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
-        if (n <= 0)
-            break;
-
-        for (ssize_t i = 0; i < n; ++i)
+        // If a modal dialog is open, navigate/select options
+        if (dialogOpen)
         {
-            unsigned char ch = buf[i];
-            if (ch == 27) // ESC
+            int maxIdx = (dialogType == DialogType::Pause ? 2 : 1);
+            if (key == NCKEY_UP || key == NCKEY_LEFT)
             {
-                // Try to read two more bytes for ESC [ A/B/C/D or ESC O A/B/C/D
-                unsigned char seq[2];
-                int got = 0;
-                for (int j = 0; j < 2; ++j)
+                dialogIndex = (dialogIndex - 1 + (maxIdx + 1)) % (maxIdx + 1);
+                continue;
+            }
+            if (key == NCKEY_DOWN || key == NCKEY_RIGHT)
+            {
+                dialogIndex = (dialogIndex + 1) % (maxIdx + 1);
+                continue;
+            }
+            if (key == 'q' || key == 'Q')
+            {
+                exitRequested = true;
+                continue;
+            }
+            if (key == ' ' || key == '\n' || key == NCKEY_ENTER)
+            {
+                if (dialogType == DialogType::Pause)
                 {
-                    fd_set set2;
-                    FD_ZERO(&set2);
-                    FD_SET(STDIN_FILENO, &set2);
-                    timeval tv2{0, 10000}; // wait up to 10ms per byte
-                    int rv2 = select(STDIN_FILENO + 1, &set2, nullptr, nullptr, &tv2);
-                    if (rv2 > 0)
+                    if (dialogIndex == 0)
                     {
-                        unsigned char c;
-                        if (::read(STDIN_FILENO, &c, 1) == 1)
-                            seq[got++] = c;
+                        paused = false;
+                        closeDialog();
+                    }
+                    else if (dialogIndex == 1)
+                    {
+                        reset();
+                        paused = false;
+                        closeDialog();
+                    }
+                    else if (dialogIndex == 2)
+                    {
+                        exitRequested = true;
                     }
                 }
-                if (got >= 2 && (seq[0] == '[' || seq[0] == 'O'))
+                else if (dialogType == DialogType::GameOver)
                 {
-                    switch (seq[1])
+                    if (dialogIndex == 0)
                     {
-                    case 'A':
-                        snake.setDirection(Direction::Up);
-                        break;
-                    case 'B':
-                        snake.setDirection(Direction::Down);
-                        break;
-                    case 'D':
-                        snake.setDirection(Direction::Left);
-                        break;
-                    case 'C':
-                        snake.setDirection(Direction::Right);
-                        break;
-                    default:
-                        break;
+                        reset();
+                        closeDialog();
+                    }
+                    else if (dialogIndex == 1)
+                    {
+                        exitRequested = true;
                     }
                 }
+                continue;
+            }
+            if (key == 'p' || key == 'P')
+            {
+                if (dialogType == DialogType::Pause)
+                {
+                    paused = false;
+                    closeDialog();
+                }
+                continue;
+            }
+            // ignore other keys while dialog is open
+            continue;
+        }
+
+        auto handle_dir = [&](Direction d)
+        { if (!paused && !over) snake.setDirection(d); };
+
+        if (key == NCKEY_UP)
+        {
+            handle_dir(Direction::Up);
+        }
+        else if (key == NCKEY_DOWN)
+        {
+            handle_dir(Direction::Down);
+        }
+        else if (key == NCKEY_LEFT)
+        {
+            handle_dir(Direction::Left);
+        }
+        else if (key == NCKEY_RIGHT)
+        {
+            handle_dir(Direction::Right);
+        }
+        else if (key == 'w' || key == 'W')
+        {
+            handle_dir(Direction::Up);
+        }
+        else if (key == 's' || key == 'S')
+        {
+            handle_dir(Direction::Down);
+        }
+        else if (key == 'a' || key == 'A')
+        {
+            handle_dir(Direction::Left);
+        }
+        else if (key == 'd' || key == 'D')
+        {
+            handle_dir(Direction::Right);
+        }
+        else if (key == 'q' || key == 'Q')
+        {
+            exitRequested = true;
+        }
+        else if (key == ' ' || key == 'p' || key == 'P')
+        {
+            paused = !paused;
+            if (paused)
+            {
+                openDialog(DialogType::Pause);
+                dialogIndex = 0;
             }
             else
             {
-                switch (ch)
-                {
-                case 'w':
-                case 'W':
-                    snake.setDirection(Direction::Up);
-                    break;
-                case 's':
-                case 'S':
-                    snake.setDirection(Direction::Down);
-                    break;
-                case 'a':
-                case 'A':
-                    snake.setDirection(Direction::Left);
-                    break;
-                case 'd':
-                case 'D':
-                    snake.setDirection(Direction::Right);
-                    break;
-                case 'x':
-                case 'X':
-                    over = true;
-                    exitRequested = true;
-                    break;
-                default:
-                    break;
-                }
+                closeDialog();
             }
         }
-    }
-#endif
-}
-
-void Game::update()
-{
-    Point next = snake.nextHead();
-    // Boundary collision
-    if (next.x <= 0 || next.x >= width - 1 || next.y <= 0 || next.y >= height - 1)
-    {
-        over = true;
-        return;
-    }
-    // Self collision
-    if (snake.hitsSelf(next))
-    {
-        over = true;
-        return;
-    }
-
-    bool grow = (next == fruit.position());
-    snake.move(grow);
-    if (grow)
-    {
-        score += 1;
-        fruit.respawn([&](const Point &p)
-                      { return snake.contains(p); });
+        else if (key == 'r' || key == 'R' || key == 'c' || key == 'C')
+        {
+            if (over)
+                reset();
+        }
+        else if (key == 'g' || key == 'G')
+        {
+            // cycle snake glyph style
+            switch (snakeStyle)
+            {
+            case SnakeGlyphStyle::Light:
+                snakeStyle = SnakeGlyphStyle::Heavy;
+                break;
+            case SnakeGlyphStyle::Heavy:
+                snakeStyle = SnakeGlyphStyle::Rounded;
+                break;
+            case SnakeGlyphStyle::Rounded:
+                snakeStyle = SnakeGlyphStyle::Scales;
+                break;
+            case SnakeGlyphStyle::Scales:
+                snakeStyle = SnakeGlyphStyle::DoubleLine;
+                break;
+            case SnakeGlyphStyle::DoubleLine:
+                snakeStyle = SnakeGlyphStyle::Block;
+                break;
+            case SnakeGlyphStyle::Block:
+                snakeStyle = SnakeGlyphStyle::Arrow;
+                break;
+            case SnakeGlyphStyle::Arrow:
+                snakeStyle = SnakeGlyphStyle::Dotted;
+                break;
+            case SnakeGlyphStyle::Dotted:
+                snakeStyle = SnakeGlyphStyle::Braille;
+                break;
+            case SnakeGlyphStyle::Braille:
+                snakeStyle = SnakeGlyphStyle::Light;
+                break;
+            }
+        }
     }
 }
 
 void Game::render() const
 {
-#ifdef _WIN32
-    system("cls");
-#else
-    // ANSI clear: erase screen and move cursor to home
-    std::cout << "\x1b[2J\x1b[H";
-#endif
+    if (!g_stdp)
+        return;
+    ncplane_erase(g_stdp);
+    // Compute centered origin for board and HUD
+    unsigned ph = 0, pw = 0;
+    ncplane_dim_yx(g_stdp, &ph, &pw);
+    const int HUDW = 24; // fixed side panel width
+    int oy = (int)ph / 2 - height / 2;
+    if (oy < 0)
+        oy = 0;
+    int ox = (int)pw / 2 - (width + HUDW + 1) / 2;
+    if (ox < 0)
+        ox = 0;
+    int hx = ox + width + 1; // HUD x
 
-    std::vector<std::string> grid(height, std::string(width, ' '));
+    // Draw board border with UTF-8 double lines and gradient color
+    const char *hline = "═";
+    const char *vline = "║";
+    const char *tl = "╔";
+    const char *tr = "╗";
+    const char *bl = "╚";
+    const char *br = "╝";
+    auto grad = [&](float t, uint8_t &r, uint8_t &g, uint8_t &b)
+    {
+        // from bluish (120,160,255) to aqua (120,255,200)
+        int r1 = 120, g1 = 160, b1 = 255, r2 = 120, g2 = 255, b2 = 200;
+        r = (uint8_t)(r1 + (r2 - r1) * t);
+        g = (uint8_t)(g1 + (g2 - g1) * t);
+        b = (uint8_t)(b1 + (b2 - b1) * t);
+    };
+    // corners
+    uint8_t cr, cg, cb;
+    grad(0.0f, cr, cg, cb);
+    set_fg(g_stdp, cr, cg, cb);
+    ncplane_putstr_yx(g_stdp, oy + 0, ox + 0, tl);
+    grad(1.0f, cr, cg, cb);
+    set_fg(g_stdp, cr, cg, cb);
+    ncplane_putstr_yx(g_stdp, oy + 0, ox + width - 1, tr);
+    grad(0.0f, cr, cg, cb);
+    set_fg(g_stdp, cr, cg, cb);
+    ncplane_putstr_yx(g_stdp, oy + height - 1, ox + 0, bl);
+    grad(1.0f, cr, cg, cb);
+    set_fg(g_stdp, cr, cg, cb);
+    ncplane_putstr_yx(g_stdp, oy + height - 1, ox + width - 1, br);
+    // top/bottom
+    for (int x = 1; x < width - 1; ++x)
+    {
+        float t = (float)x / (float)(width - 1);
+        grad(t, cr, cg, cb);
+        set_fg(g_stdp, cr, cg, cb);
+        ncplane_putstr_yx(g_stdp, oy + 0, ox + x, hline);
+        ncplane_putstr_yx(g_stdp, oy + height - 1, ox + x, hline);
+    }
+    // sides
+    for (int y = 1; y < height - 1; ++y)
+    {
+        float t = (float)y / (float)(height - 1);
+        grad(t, cr, cg, cb);
+        set_fg(g_stdp, cr, cg, cb);
+        ncplane_putstr_yx(g_stdp, oy + y, ox + 0, vline);
+        grad(1.0f - t, cr, cg, cb);
+        set_fg(g_stdp, cr, cg, cb);
+        ncplane_putstr_yx(g_stdp, oy + y, ox + width - 1, vline);
+    }
+
+    // Side HUD panel
+    set_fg(g_stdp, 200, 230, 255);
+    ncplane_putstr_yx(g_stdp, oy + 0, hx + 0, "┌");
+    for (int x = 1; x < HUDW - 1; ++x)
+        ncplane_putstr_yx(g_stdp, oy + 0, hx + x, "─");
+    ncplane_putstr_yx(g_stdp, oy + 0, hx + HUDW - 1, "┐");
+    for (int y = 1; y < height - 1; ++y)
+    {
+        ncplane_putstr_yx(g_stdp, oy + y, hx + 0, "│");
+        ncplane_putstr_yx(g_stdp, oy + y, hx + HUDW - 1, "│");
+    }
+    ncplane_putstr_yx(g_stdp, oy + height - 1, hx + 0, "└");
+    for (int x = 1; x < HUDW - 1; ++x)
+        ncplane_putstr_yx(g_stdp, oy + height - 1, hx + x, "─");
+    ncplane_putstr_yx(g_stdp, oy + height - 1, hx + HUDW - 1, "┘");
+    // HUD content
+    set_fg(g_stdp, 120, 200, 255);
+    ncplane_putstr_yx(g_stdp, oy + 1, hx + 2, "Player:");
+    set_fg(g_stdp, 255, 255, 255);
+    ncplane_putstr_yx(g_stdp, oy + 1, hx + 10, playerName.c_str());
+    set_fg(g_stdp, 255, 215, 0);
+    ncplane_putstr_yx(g_stdp, oy + 3, hx + 2, "Score:");
+    set_fg(g_stdp, 255, 255, 255);
+    ncplane_putstr_yx(g_stdp, oy + 3, hx + 10, std::to_string(score).c_str());
+    set_fg(g_stdp, 0, 255, 180);
+    ncplane_putstr_yx(g_stdp, oy + 5, hx + 2, "High:");
+    set_fg(g_stdp, 255, 255, 255);
+    ncplane_putstr_yx(g_stdp, oy + 5, hx + 10, std::to_string(highScore).c_str());
+    set_fg(g_stdp, 200, 200, 200);
+    ncplane_putstr_yx(g_stdp, oy + 7, hx + 2, "Controls:");
+    set_fg(g_stdp, 180, 180, 180);
+    ncplane_putstr_yx(g_stdp, oy + 8, hx + 2, "Arrows/WASD move");
+    ncplane_putstr_yx(g_stdp, oy + 9, hx + 2, "p/space pause");
+    ncplane_putstr_yx(g_stdp, oy + 10, hx + 2, "q quit");
+    // Optional hint for glyph styles
+    set_fg(g_stdp, 170, 170, 170);
+    ncplane_putstr_yx(g_stdp, oy + 12, hx + 2, "g: change snake style");
+
+    // Fruit (solid circle)
+    const auto &fp = fruit.position();
+    set_fg(g_stdp, 255, 80, 80);
+    ncplane_putstr_yx(g_stdp, oy + fp.y, ox + fp.x, "●");
+
+    // Snake with connected glyphs and directional head + multi-stop gradient
+    const auto &segs = snake.segments();
+    int nseg = (int)segs.size();
+    // Color gradient: lime (head) -> yellow (mid) -> cyan (tail)
+    auto sgrad = [&](float t, uint8_t &r, uint8_t &g, uint8_t &b)
+    {
+        int r0 = 80, g0 = 255, b0 = 120; // lime
+        int r1 = 255, g1 = 220, b1 = 0;  // yellow
+        int r2 = 0, g2 = 220, b2 = 255;  // cyan
+        if (t <= 0.5f)
+        {
+            float u = t * 2.0f;
+            r = (uint8_t)(r0 + (int)((r1 - r0) * u));
+            g = (uint8_t)(g0 + (int)((g1 - g0) * u));
+            b = (uint8_t)(b0 + (int)((b1 - b0) * u));
+        }
+        else
+        {
+            float u = (t - 0.5f) * 2.0f;
+            r = (uint8_t)(r1 + (int)((r2 - r1) * u));
+            g = (uint8_t)(g1 + (int)((g2 - g1) * u));
+            b = (uint8_t)(b1 + (int)((b2 - b1) * u));
+        }
+    };
+    for (int i = 0; i < nseg; ++i)
+    {
+        const Point &c = segs[i];
+        float t = (float)i / std::max(1, nseg - 1); // 0=head .. 1=tail
+        uint8_t r, g, b;
+        sgrad(t, r, g, b);
+        set_fg(g_stdp, r, g, b);
+        const char *glyph = "■";
+        if (i == 0)
+        {
+            // head based on current direction
+            switch (snake.getDirection())
+            {
+            case Direction::Up:
+                glyph = "▲";
+                break;
+            case Direction::Down:
+                glyph = "▼";
+                break;
+            case Direction::Left:
+                glyph = "◀";
+                break;
+            case Direction::Right:
+                glyph = "▶";
+                break;
+            }
+        }
+        else if (i == nseg - 1)
+        {
+            // tail dot
+            glyph = "•";
+        }
+        else
+        {
+            const Point &p = segs[i - 1];
+            const Point &n = segs[i + 1];
+            bool up = (p.y < c.y) || (n.y < c.y);
+            bool down = (p.y > c.y) || (n.y > c.y);
+            bool left = (p.x < c.x) || (n.x < c.x);
+            bool right = (p.x > c.x) || (n.x > c.x);
+            switch (snakeStyle)
+            {
+            case SnakeGlyphStyle::Light:
+                if ((left && right) && !(up || down))
+                    glyph = "─";
+                else if ((up && down) && !(left || right))
+                    glyph = "│";
+                else if ((left && up))
+                    glyph = "┘"; // connects left+up
+                else if ((left && down))
+                    glyph = "┐"; // connects left+down
+                else if ((right && up))
+                    glyph = "└"; // connects right+up
+                else if ((right && down))
+                    glyph = "┌"; // connects right+down
+                else
+                    glyph = "■";
+                break;
+            case SnakeGlyphStyle::Heavy:
+                if ((left && right) && !(up || down))
+                    glyph = "━";
+                else if ((up && down) && !(left || right))
+                    glyph = "┃";
+                else if ((left && up))
+                    glyph = "┛";
+                else if ((left && down))
+                    glyph = "┓";
+                else if ((right && up))
+                    glyph = "┗";
+                else if ((right && down))
+                    glyph = "┏";
+                else
+                    glyph = "■";
+                break;
+            case SnakeGlyphStyle::Rounded:
+                if ((left && right) && !(up || down))
+                    glyph = "─";
+                else if ((up && down) && !(left || right))
+                    glyph = "│";
+                else if ((left && up))
+                    glyph = "╯";
+                else if ((left && down))
+                    glyph = "╮";
+                else if ((right && up))
+                    glyph = "╰";
+                else if ((right && down))
+                    glyph = "╭";
+                else
+                    glyph = "■";
+                break;
+            case SnakeGlyphStyle::Scales:
+                // ignore connectivity; use a scale tile pattern
+                glyph = ((i & 1) == 0) ? "▚" : "▞";
+                break;
+            case SnakeGlyphStyle::DoubleLine:
+                if ((left && right) && !(up || down))
+                    glyph = "═";
+                else if ((up && down) && !(left || right))
+                    glyph = "║";
+                else if ((left && up))
+                    glyph = "╝";
+                else if ((left && down))
+                    glyph = "╗";
+                else if ((right && up))
+                    glyph = "╚";
+                else if ((right && down))
+                    glyph = "╔";
+                else
+                    glyph = "■";
+                break;
+            case SnakeGlyphStyle::Block:
+                glyph = "█";
+                break;
+            case SnakeGlyphStyle::Arrow:
+            {
+                int dx = n.x - c.x;
+                int dy = n.y - c.y;
+                if (dx > 0)
+                    glyph = "▷";
+                else if (dx < 0)
+                    glyph = "◁";
+                else if (dy > 0)
+                    glyph = "▽";
+                else if (dy < 0)
+                    glyph = "△";
+                else
+                    glyph = "■";
+                break;
+            }
+            case SnakeGlyphStyle::Dotted:
+                glyph = (i % 3 == 0) ? "●" : (i % 3 == 1 ? "•" : "·");
+                break;
+            case SnakeGlyphStyle::Braille:
+            {
+                static const char *pat[] = {"⣿", "⣾", "⣷", "⣯", "⣟"};
+                glyph = pat[i % 5];
+                break;
+            }
+            }
+        }
+        ncplane_putstr_yx(g_stdp, oy + c.y, ox + c.x, glyph);
+    }
+
+    // Modal dialog (Pause or GameOver)
+    if (dialogOpen)
+    {
+        int drows = 7;
+        int dcols = 32;
+        int dy = oy + height / 2 - drows / 2;
+        int dx = ox + width / 2 - dcols / 2;
+        if (dy < 1)
+            dy = 1;
+        if (dx < 1)
+            dx = 1;
+        set_fg(g_stdp, 255, 255, 255);
+        // Top border
+        ncplane_putstr_yx(g_stdp, dy + 0, dx + 0, "╔");
+        for (int x = 1; x < dcols - 1; ++x)
+            ncplane_putstr_yx(g_stdp, dy + 0, dx + x, "═");
+        ncplane_putstr_yx(g_stdp, dy + 0, dx + dcols - 1, "╗");
+        // Sides
+        for (int y = 1; y < drows - 1; ++y)
+        {
+            ncplane_putstr_yx(g_stdp, dy + y, dx + 0, "║");
+            ncplane_putstr_yx(g_stdp, dy + y, dx + dcols - 1, "║");
+        }
+        // Bottom
+        ncplane_putstr_yx(g_stdp, dy + drows - 1, dx + 0, "╚");
+        for (int x = 1; x < dcols - 1; ++x)
+            ncplane_putstr_yx(g_stdp, dy + drows - 1, dx + x, "═");
+        ncplane_putstr_yx(g_stdp, dy + drows - 1, dx + dcols - 1, "╝");
+
+        std::string title = (dialogType == DialogType::Pause) ? "Pause" : "Game Over";
+        int tx = dx + (dcols - (int)title.size()) / 2;
+        set_fg(g_stdp, 120, 200, 255);
+        ncplane_putstr_yx(g_stdp, dy + 1, tx, title.c_str());
+
+        auto draw_option = [&](int row, int idx, const char *label)
+        {
+            bool sel = (dialogIndex == idx);
+            if (sel)
+                set_fg(g_stdp, 255, 255, 255);
+            else
+                set_fg(g_stdp, 180, 180, 180);
+            std::string line = sel ? (std::string("▶ ") + label + " ◀") : (std::string("  ") + label);
+            ncplane_putstr_yx(g_stdp, dy + row, dx + 3, line.c_str());
+        };
+        if (dialogType == DialogType::Pause)
+        {
+            draw_option(3, 0, "Resume");
+            draw_option(4, 1, "Restart");
+            draw_option(5, 2, "Quit");
+        }
+        else
+        {
+            draw_option(3, 0, "Restart");
+            draw_option(4, 1, "Quit");
+        }
+    }
+}
+
+void Game::update()
+{
+    // Compute next head and collisions
+    Point next = snake.nextHead();
 
     // Walls
-    for (int x = 0; x < width; ++x)
+    if (next.x <= 0 || next.x >= width - 1 || next.y <= 0 || next.y >= height - 1)
     {
-        grid[0][x] = WALL_CHAR;
-        grid[height - 1][x] = WALL_CHAR;
-    }
-    for (int y = 0; y < height; ++y)
-    {
-        grid[y][0] = WALL_CHAR;
-        grid[y][width - 1] = WALL_CHAR;
+        over = true;
+        openDialog(DialogType::GameOver);
+        return;
     }
 
-    // Fruit
-    const auto &fp = fruit.position();
-    grid[fp.y][fp.x] = FRUIT_CHAR;
-
-    // Snake
-    bool first = true;
-    for (const auto &seg : snake.segments())
+    // Self
+    if (snake.hitsSelf(next))
     {
-        grid[seg.y][seg.x] = first ? SNAKE_HEAD_CHAR : SNAKE_BODY_CHAR;
-        first = false;
+        over = true;
+        openDialog(DialogType::GameOver);
+        return;
     }
 
-    // Print
-    for (int y = 0; y < height; ++y)
+    bool grow = false;
+    if (next == fruit.position())
     {
-        std::cout << grid[y] << "\n";
+        grow = true;
+        score += 10;
+        if (score > highScore)
+            highScore = score;
+        fruit.respawn([&](const Point &p)
+                      { return snake.contains(p) || p == next; });
     }
-    std::cout << playerName << "'s Score: " << score << "\n";
-    std::cout << "Controls: WASD or Arrow Keys. Press X to exit.\n";
+
+    snake.move(grow);
 }
 
 void Game::gameOverScreen() const
 {
-    std::cout << "\nGame Over! Final Score: " << score << "\n";
-    std::cout << "Press R to restart or Q to quit..." << std::endl;
+    // Legacy blocking screen; unused in new non-blocking loop
 }
 
-int Game::run()
+void Game::reset()
 {
-    chooseDifficulty();
-    while (true)
-    {
-        // Main game session
-        reset();
-        while (!over)
-        {
-            processInput();
-            update();
-            render();
-            std::this_thread::sleep_for(std::chrono::milliseconds(tickMs));
-        }
-        // Game over prompt
-        gameOverScreen();
-        if (exitRequested)
-            return score;
-        // Poll for R (restart) or Q (quit)
-        while (true)
-        {
-#ifdef _WIN32
-            bool restart = false;
-            bool quit = false;
-            if (g_hIn != INVALID_HANDLE_VALUE)
-            {
-                INPUT_RECORD records[16];
-                DWORD count = 0;
-                if (PeekConsoleInput(g_hIn, records, 16, &count) && count > 0)
-                {
-                    if (ReadConsoleInput(g_hIn, records, count, &count))
-                    {
-                        for (DWORD i = 0; i < count; ++i)
-                        {
-                            const INPUT_RECORD &rec = records[i];
-                            if (rec.EventType == KEY_EVENT && rec.Event.KeyEvent.bKeyDown)
-                            {
-                                WORD vk = rec.Event.KeyEvent.wVirtualKeyCode;
-                                if (vk == 'R')
-                                    restart = true;
-                                if (vk == 'Q' || vk == 'X')
-                                {
-                                    quit = true;
-                                    if (vk == 'X')
-                                        exitRequested = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // Fallback polling for restart/quit
-            if (!restart && !quit)
-            {
-                auto isKey = [](int vk)
-                { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
-                if (isKey('R'))
-                    restart = true;
-                if (isKey('Q') || isKey('X'))
-                {
-                    quit = true;
-                    if (isKey('X'))
-                        exitRequested = true;
-                }
-            }
-#else
-            bool restart = false;
-            bool quit = false;
-            // POSIX/WSL: temporarily restore cooked mode and do blocking reads for prompt
-            if (g_termConfigured)
-            {
-                tcsetattr(STDIN_FILENO, TCSANOW, &g_origTerm);
-                if (g_origFlags != -1)
-                    fcntl(STDIN_FILENO, F_SETFL, g_origFlags);
-                g_termConfigured = false;
-            }
-
-            // Blocking read until a valid key is pressed
-            while (!restart && !quit)
-            {
-                int ch = getchar(); // blocking in cooked mode
-                if (ch == EOF)
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                    continue;
-                }
-
-                // Optional runtime debug to see what code we get
-                const char *dbg = std::getenv("BYTEHEBI_KEY_DEBUG");
-                if (dbg)
-                {
-                    std::cerr << "DEBUG: prompt got char code=" << ch << " ('";
-                    if (isprint(ch))
-                        std::cerr << (char)ch;
-                    else
-                        std::cerr << '?';
-                    std::cerr << "')\n";
-                }
-
-                if (ch == 'r' || ch == 'R')
-                    restart = true;
-                else if (ch == 'q' || ch == 'Q')
-                    quit = true;
-                else if (ch == 'x' || ch == 'X')
-                {
-                    quit = true;
-                    exitRequested = true;
-                }
-            }
-
-            // Re-enable raw non-blocking mode for gameplay
-            if (tcgetattr(STDIN_FILENO, &g_origTerm) == 0)
-            {
-                termios raw = g_origTerm;
-                raw.c_lflag &= ~(ICANON | ECHO);
-                raw.c_cc[VMIN] = 0;
-                raw.c_cc[VTIME] = 0;
-                tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-                int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-                if (flags != -1)
-                    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
-                g_termConfigured = true;
-            }
-#endif
-            if (restart)
-                break;
-            if (quit)
-                return score;
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-        }
-    }
+    score = 0;
+    over = false;
+    exitRequested = false;
+    dialogOpen = false;
+    dialogType = DialogType::None;
+    dialogIndex = 0;
+    paused = false;
+    snake = Snake(width / 2, height / 2, 3);
+    fruit = Fruit(width, height);
+    fruit.respawn([&](const Point &p)
+                  { return snake.contains(p); });
 }
 
 void Game::chooseDifficulty()
 {
-    std::cout << "\nSET DIFFICULTY\n1: Easy\n2: Medium\n3: Hard\nChoice: ";
-#ifndef _WIN32
-    // Temporarily restore cooked mode in WSL/POSIX to take interactive input
-    if (g_termConfigured)
-    {
-        tcsetattr(STDIN_FILENO, TCSANOW, &g_origTerm);
-        if (g_origFlags != -1)
-        {
-            fcntl(STDIN_FILENO, F_SETFL, g_origFlags);
-        }
-    }
-#endif
-    int choice = 0;
-    if (!(std::cin >> choice))
-    {
-        std::cin.clear();
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-        choice = 2;
-    }
-#ifndef _WIN32
-    // Re-apply raw, non-blocking mode for gameplay
-    {
-        termios raw = g_origTerm;
-        raw.c_lflag &= ~(ICANON | ECHO);
-        raw.c_cc[VMIN] = 0;
-        raw.c_cc[VTIME] = 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-        int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-        if (flags != -1)
-        {
-            fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
-        }
-        g_termConfigured = true;
-    }
-#endif
-    switch (choice)
-    {
-    case 1:
-        tickMs = 150;
-        break;
-    case 2:
-        tickMs = 100;
-        break;
-    case 3:
-        tickMs = 50;
-        break;
-    default:
-        tickMs = 100;
-        break;
-    }
+    // Simple preset based on name or default; could be interactive later
+    // Keep it non-interactive to avoid extra UI complexity in the TUI
+    tickMs = 120; // default normal
+}
+
+void Game::loadHighScore()
+{
+    std::ifstream in(highScoreFile);
+    if (!in.good())
+        return;
+    int hs = 0;
+    in >> hs;
+    if (in)
+        highScore = hs;
+}
+
+void Game::saveHighScore()
+{
+    std::ofstream out(highScoreFile, std::ios::trunc);
+    if (!out.good())
+        return;
+    out << highScore << "\n";
+}
+
+void Game::openDialog(DialogType t)
+{
+    dialogType = t;
+    dialogOpen = true;
+    dialogIndex = 0;
+}
+
+void Game::closeDialog()
+{
+    dialogOpen = false;
+    dialogType = DialogType::None;
+    dialogIndex = 0;
 }
