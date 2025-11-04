@@ -30,7 +30,8 @@ private:
     {
         None,
         Pause,
-        GameOver
+        GameOver,
+        EnterName
     };
     void processInput();
     void update();
@@ -55,6 +56,12 @@ private:
     DialogType dialogType{DialogType::None};
     int dialogIndex{0};
     std::string playerName{"Player"};
+    // Temporary storage for name entry when EnterName dialog is open
+    std::string nameEntry{""};
+    int nameMaxLen{24};
+    // Horizontal cell width in terminal columns. Use >1 to make cells rectangular
+    // (e.g. 2 means each logical cell uses two terminal columns).
+    int cellW{2};
     int tickMs{120};
     int highScore{0};
     std::string highScoreFile{"highscore.txt"};

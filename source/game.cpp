@@ -82,6 +82,10 @@ int Game::run()
         return 1;
     }
 
+    // At startup, prompt for player name in an in-game dialog
+    openDialog(DialogType::EnterName);
+    nameEntry.clear();
+
     auto lastTick = std::chrono::steady_clock::now();
 
     while (!exitRequested)
@@ -126,9 +130,39 @@ void Game::processInput()
         if (key == (uint32_t)-1)
             break; // error
 
-        // If a modal dialog is open, navigate/select options
+        // If a modal dialog is open, handle its input
         if (dialogOpen)
         {
+            // Special-case: name entry dialog accepts text input + backspace + enter
+            if (dialogType == DialogType::EnterName)
+            {
+                // Enter: accept name (use default "Player" if empty)
+                if (key == '\n' || key == NCKEY_ENTER)
+                {
+                    playerName = nameEntry.empty() ? std::string("Player") : nameEntry;
+                    closeDialog();
+                    // Unpause and start the game now that we have a name
+                    paused = false;
+                    continue;
+                }
+                // Backspace / delete
+                if (key == 127 || key == 8)
+                {
+                    if (!nameEntry.empty())
+                        nameEntry.pop_back();
+                    continue;
+                }
+                // Printable ASCII characters
+                if (key >= 32 && key < 128)
+                {
+                    if ((int)nameEntry.size() < nameMaxLen)
+                        nameEntry.push_back(static_cast<char>(key));
+                    continue;
+                }
+                // other keys are ignored while entering name
+                continue;
+            }
+
             int maxIdx = (dialogType == DialogType::Pause ? 2 : 1);
             if (key == NCKEY_UP || key == NCKEY_LEFT)
             {
@@ -563,11 +597,11 @@ void Game::render() const
         ncplane_putstr_yx(g_stdp, oy + c.y, ox + c.x, glyph);
     }
 
-    // Modal dialog (Pause or GameOver)
+    // Modal dialog (Pause, GameOver, or EnterName)
     if (dialogOpen)
     {
         int drows = 7;
-        int dcols = 32;
+        int dcols = 40;
         int dy = oy + height / 2 - drows / 2;
         int dx = ox + width / 2 - dcols / 2;
         if (dy < 1)
@@ -592,31 +626,61 @@ void Game::render() const
             ncplane_putstr_yx(g_stdp, dy + drows - 1, dx + x, "═");
         ncplane_putstr_yx(g_stdp, dy + drows - 1, dx + dcols - 1, "╝");
 
-        std::string title = (dialogType == DialogType::Pause) ? "Pause" : "Game Over";
+        std::string title;
+        if (dialogType == DialogType::EnterName)
+            title = "Enter Player Name";
+        else if (dialogType == DialogType::Pause)
+            title = "Pause";
+        else
+            title = "Game Over";
+
         int tx = dx + (dcols - (int)title.size()) / 2;
         set_fg(g_stdp, 120, 200, 255);
         ncplane_putstr_yx(g_stdp, dy + 1, tx, title.c_str());
 
-        auto draw_option = [&](int row, int idx, const char *label)
+        // For EnterName, show input box and instructions
+        if (dialogType == DialogType::EnterName)
         {
-            bool sel = (dialogIndex == idx);
-            if (sel)
-                set_fg(g_stdp, 255, 255, 255);
-            else
-                set_fg(g_stdp, 180, 180, 180);
-            std::string line = sel ? (std::string("▶ ") + label + " ◀") : (std::string("  ") + label);
-            ncplane_putstr_yx(g_stdp, dy + row, dx + 3, line.c_str());
-        };
-        if (dialogType == DialogType::Pause)
-        {
-            draw_option(3, 0, "Resume");
-            draw_option(4, 1, "Restart");
-            draw_option(5, 2, "Quit");
+            set_fg(g_stdp, 200, 200, 200);
+            ncplane_putstr_yx(g_stdp, dy + 3, dx + 3, "Type your name and press Enter:");
+            set_fg(g_stdp, 255, 255, 255);
+            std::string shown = nameEntry.empty() ? std::string("(Player)") : nameEntry;
+            // Ensure it fits
+            if ((int)shown.size() > dcols - 6)
+                shown = shown.substr(0, dcols - 6);
+            ncplane_putstr_yx(g_stdp, dy + 4, dx + 3, shown.c_str());
         }
         else
         {
-            draw_option(3, 0, "Restart");
-            draw_option(4, 1, "Quit");
+            // For Pause and GameOver, draw options. For GameOver also show the score.
+            if (dialogType == DialogType::GameOver)
+            {
+                set_fg(g_stdp, 200, 200, 0);
+                std::string scoreLine = std::string("Score: ") + std::to_string(score);
+                ncplane_putstr_yx(g_stdp, dy + 2, dx + 3, scoreLine.c_str());
+            }
+
+            auto draw_option = [&](int row, int idx, const char *label)
+            {
+                bool sel = (dialogIndex == idx);
+                if (sel)
+                    set_fg(g_stdp, 255, 255, 255);
+                else
+                    set_fg(g_stdp, 180, 180, 180);
+                std::string line = sel ? (std::string("▶ ") + label + " ◀") : (std::string("  ") + label);
+                ncplane_putstr_yx(g_stdp, dy + row, dx + 3, line.c_str());
+            };
+            if (dialogType == DialogType::Pause)
+            {
+                draw_option(3, 0, "Resume");
+                draw_option(4, 1, "Restart");
+                draw_option(5, 2, "Quit");
+            }
+            else
+            {
+                draw_option(3, 0, "Restart");
+                draw_option(4, 1, "Quit");
+            }
         }
     }
 }
@@ -707,6 +771,12 @@ void Game::openDialog(DialogType t)
     dialogType = t;
     dialogOpen = true;
     dialogIndex = 0;
+    if (t == DialogType::EnterName)
+    {
+        nameEntry.clear();
+        // Pause the game while asking for the player's name
+        paused = true;
+    }
 }
 
 void Game::closeDialog()
