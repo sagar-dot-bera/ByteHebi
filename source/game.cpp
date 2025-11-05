@@ -163,6 +163,98 @@ void Game::processInput()
                 continue;
             }
 
+            if (dialogType == DialogType::EnterSize)
+            {
+                // Initialize entries if empty
+                if (widthEntry.empty())
+                    widthEntry = std::to_string(width);
+                if (heightEntry.empty())
+                    heightEntry = std::to_string(height);
+
+                // Navigate between fields
+                if (key == NCKEY_LEFT || key == NCKEY_UP)
+                {
+                    sizeFieldIdx = (sizeFieldIdx + 1) % 2; // toggle
+                    continue;
+                }
+                if (key == NCKEY_RIGHT || key == NCKEY_DOWN)
+                {
+                    sizeFieldIdx = (sizeFieldIdx + 1) % 2; // toggle
+                    continue;
+                }
+                // Backspace
+                if (key == 127 || key == 8)
+                {
+                    std::string &field = (sizeFieldIdx == 0 ? widthEntry : heightEntry);
+                    if (!field.empty())
+                        field.pop_back();
+                    continue;
+                }
+                // Digits
+                if (key >= '0' && key <= '9')
+                {
+                    std::string &field = (sizeFieldIdx == 0 ? widthEntry : heightEntry);
+                    if ((int)field.size() < 3)
+                        field.push_back(static_cast<char>(key));
+                    continue;
+                }
+                // Confirm
+                if (key == '\n' || key == NCKEY_ENTER)
+                {
+                    // Parse and validate
+                    int newW = width;
+                    int newH = height;
+                    try
+                    {
+                        if (!widthEntry.empty())
+                            newW = std::stoi(widthEntry);
+                    }
+                    catch (...)
+                    {
+                    }
+                    try
+                    {
+                        if (!heightEntry.empty())
+                            newH = std::stoi(heightEntry);
+                    }
+                    catch (...)
+                    {
+                    }
+                    sizeError = false;
+                    sizeErrorMsg.clear();
+                    if (newW < minWidth || newH < minHeight)
+                    {
+                        sizeError = true;
+                        sizeErrorMsg = "Too small. Min " + std::to_string(minWidth) + "x" + std::to_string(minHeight) + ".";
+                        continue;
+                    }
+                    if (newW <= newH)
+                    {
+                        sizeError = true;
+                        sizeErrorMsg = "Require m > n (width > height).";
+                        continue;
+                    }
+                    // Check terminal size
+                    unsigned ph = 0, pw = 0;
+                    ncplane_dim_yx(g_stdp, &ph, &pw);
+                    if ((unsigned)newH > ph || (unsigned)newW > pw)
+                    {
+                        sizeError = true;
+                        sizeErrorMsg = "Doesn't fit terminal. Reduce size.";
+                        continue;
+                    }
+                    // Apply and reset game
+                    width = newW;
+                    height = newH;
+                    reset();
+                    closeDialog();
+                    paused = false; // start game after size confirmed
+                    continue;
+                }
+                // ignore other keys
+                continue;
+            }
+
             int maxIdx = (dialogType == DialogType::Pause ? 2 : 1);
             if (key == NCKEY_UP || key == NCKEY_LEFT)
             {
@@ -387,6 +479,22 @@ void Game::render() const
         ncplane_putstr_yx(g_stdp, oy + y, ox + width - 1, vline);
     }
 
+    // Subtle grid inside the board (checker pattern) to make cells visible
+    // Use dim dots so snake and fruit remain readable; they will overwrite dots where they sit.
+    for (int y = 1; y < height - 1; ++y)
+    {
+        for (int x = 1; x < width - 1; ++x)
+        {
+            bool alt = ((x + y) & 1) == 1;
+            // two subtle greys
+            uint8_t gr = alt ? 70 : 55;
+            uint8_t gg = alt ? 75 : 60;
+            uint8_t gb = alt ? 85 : 70;
+            set_fg(g_stdp, gr, gg, gb);
+            ncplane_putstr_yx(g_stdp, oy + y, ox + x, "·");
+        }
+    }
+
     // Side HUD panel
     set_fg(g_stdp, 200, 230, 255);
     ncplane_putstr_yx(g_stdp, oy + 0, hx + 0, "┌");
@@ -402,6 +510,39 @@ void Game::render() const
     for (int x = 1; x < HUDW - 1; ++x)
         ncplane_putstr_yx(g_stdp, oy + height - 1, hx + x, "─");
     ncplane_putstr_yx(g_stdp, oy + height - 1, hx + HUDW - 1, "┘");
+
+    // Outer frame wrapping both panels (Board + HUD)
+    {
+        // Compute outer rectangle that surrounds the board+HUD area with 1-cell padding
+        unsigned ph2 = ph, pw2 = pw; // terminal dims already queried
+        int innerLeft = ox;
+        int innerTop = oy;
+        int innerRight = hx + HUDW - 1;
+        int innerBottom = oy + height - 1;
+        int outLeft = std::max(0, innerLeft - 1);
+        int outTop = std::max(0, innerTop - 1);
+        int outRight = std::min((int)pw2 - 1, innerRight + 1);
+        int outBottom = std::min((int)ph2 - 1, innerBottom + 1);
+
+        set_fg(g_stdp, 210, 210, 210);
+        // Corners
+        ncplane_putstr_yx(g_stdp, outTop, outLeft, "╔");
+        ncplane_putstr_yx(g_stdp, outTop, outRight, "╗");
+        ncplane_putstr_yx(g_stdp, outBottom, outLeft, "╚");
+        ncplane_putstr_yx(g_stdp, outBottom, outRight, "╝");
+        // Top/Bottom
+        for (int x = outLeft + 1; x < outRight; ++x)
+        {
+            ncplane_putstr_yx(g_stdp, outTop, x, "═");
+            ncplane_putstr_yx(g_stdp, outBottom, x, "═");
+        }
+        // Sides
+        for (int y = outTop + 1; y < outBottom; ++y)
+        {
+            ncplane_putstr_yx(g_stdp, y, outLeft, "║");
+            ncplane_putstr_yx(g_stdp, y, outRight, "║");
+        }
+    }
     // HUD content
     set_fg(g_stdp, 120, 200, 255);
     ncplane_putstr_yx(g_stdp, oy + 1, hx + 2, "Player:");
@@ -631,6 +772,8 @@ void Game::render() const
             title = "Enter Player Name";
         else if (dialogType == DialogType::Pause)
             title = "Pause";
+        else if (dialogType == DialogType::EnterSize)
+            title = "Board Size (m x n)";
         else
             title = "Game Over";
 
@@ -638,7 +781,7 @@ void Game::render() const
         set_fg(g_stdp, 120, 200, 255);
         ncplane_putstr_yx(g_stdp, dy + 1, tx, title.c_str());
 
-        // For EnterName, show input box and instructions
+        // For EnterName / EnterSize, show input controls and instructions
         if (dialogType == DialogType::EnterName)
         {
             set_fg(g_stdp, 200, 200, 200);
@@ -649,6 +792,33 @@ void Game::render() const
             if ((int)shown.size() > dcols - 6)
                 shown = shown.substr(0, dcols - 6);
             ncplane_putstr_yx(g_stdp, dy + 4, dx + 3, shown.c_str());
+        }
+        else if (dialogType == DialogType::EnterSize)
+        {
+            // Initialize string fields for display
+            std::string wstr = widthEntry.empty() ? std::to_string(width) : widthEntry;
+            std::string hstr = heightEntry.empty() ? std::to_string(height) : heightEntry;
+            set_fg(g_stdp, 200, 200, 200);
+            ncplane_putstr_yx(g_stdp, dy + 2, dx + 3, "Enter board size where m > n:");
+            // Width (m)
+            set_fg(g_stdp, (sizeFieldIdx == 0) ? 255 : 180, (sizeFieldIdx == 0) ? 255 : 180, (sizeFieldIdx == 0) ? 255 : 180);
+            std::string wline = std::string("m (width): ") + wstr;
+            ncplane_putstr_yx(g_stdp, dy + 3, dx + 3, wline.c_str());
+            // Height (n)
+            set_fg(g_stdp, (sizeFieldIdx == 1) ? 255 : 180, (sizeFieldIdx == 1) ? 255 : 180, (sizeFieldIdx == 1) ? 255 : 180);
+            std::string hline = std::string("n (height): ") + hstr;
+            ncplane_putstr_yx(g_stdp, dy + 4, dx + 3, hline.c_str());
+            // Instructions / error
+            if (sizeError)
+            {
+                set_fg(g_stdp, 255, 120, 120);
+                ncplane_putstr_yx(g_stdp, dy + 5, dx + 3, sizeErrorMsg.c_str());
+            }
+            else
+            {
+                set_fg(g_stdp, 170, 170, 170);
+                ncplane_putstr_yx(g_stdp, dy + 5, dx + 3, "Type digits, arrows switch field, Enter to confirm");
+            }
         }
         else
         {
@@ -776,6 +946,15 @@ void Game::openDialog(DialogType t)
         nameEntry.clear();
         // Pause the game while asking for the player's name
         paused = true;
+    }
+    else if (t == DialogType::EnterSize)
+    {
+        widthEntry.clear();
+        heightEntry.clear();
+        sizeFieldIdx = 0;
+        sizeError = false;
+        sizeErrorMsg.clear();
+        paused = true; // keep paused during size entry
     }
 }
 

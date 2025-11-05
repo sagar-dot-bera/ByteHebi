@@ -31,7 +31,8 @@ private:
         None,
         Pause,
         GameOver,
-        EnterName
+        EnterName,
+        EnterSize
     };
     void processInput();
     void update();
@@ -59,6 +60,14 @@ private:
     // Temporary storage for name entry when EnterName dialog is open
     std::string nameEntry{""};
     int nameMaxLen{24};
+    // Temporary storage for size entry when EnterSize dialog is open
+    std::string widthEntry{""};
+    std::string heightEntry{""};
+    int sizeFieldIdx{0}; // 0 = width(m), 1 = height(n)
+    bool sizeError{false};
+    std::string sizeErrorMsg{};
+    int minWidth{20};
+    int minHeight{10};
     // Horizontal cell width in terminal columns. Use >1 to make cells rectangular
     // (e.g. 2 means each logical cell uses two terminal columns).
     int cellW{2};
