@@ -1,4 +1,4 @@
-// Snake game using Notcurses for rendering and POSIX (termios) input
+// Snake game using Notcurses for rendering and input (Linux-only)
 #include "game.h"
 #include <fstream>
 #include <chrono>
@@ -7,24 +7,21 @@
 #include <clocale>
 #include <cstdint>
 
-// Linux/WSL: Notcurses
+// Linux: Notcurses
 #include <notcurses/notcurses.h>
 #include <unistd.h>
 
-// ----------------------
-// Helpers (platform-agnostic)
-// ----------------------
+// Globals & small helpers
+
 namespace
 {
-    constexpr char WALL_CHAR = '#';
-    constexpr char SNAKE_HEAD_CHAR = '@';
-    constexpr char SNAKE_BODY_CHAR = 'O';
-    constexpr char FRUIT_CHAR = '*';
+    static notcurses *g_nc = nullptr;
+    static ncplane *g_stdp = nullptr;
+    inline void set_fg(ncplane *n, uint8_t r, uint8_t g, uint8_t b) { ncplane_set_fg_rgb8(n, r, g, b); }
 }
 
-// ----------------------
 // Game lifecycle
-// ----------------------
+
 Game::Game(int width, int height, const std::string &name)
     : width(width), height(height),
       snake(width / 2, height / 2, 3),
@@ -43,18 +40,6 @@ Game::~Game()
     saveHighScore();
 }
 
-// -------------- Globals & helpers --------------
-namespace
-{
-    // Keep Notcurses handles accessible to const render/gameOver functions
-    static notcurses *g_nc = nullptr;
-    static ncplane *g_stdp = nullptr;
-    inline void set_fg(ncplane *n, uint8_t r, uint8_t g, uint8_t b) { ncplane_set_fg_rgb8(n, r, g, b); }
-    inline void set_bg_default(ncplane *n) { ncplane_set_bg_default(n); }
-    inline void set_style(ncplane *n, uint16_t s) { ncplane_set_styles(n, s); }
-    inline void clear_style(ncplane *n) { ncplane_set_styles(n, 0); }
-}
-
 int Game::run()
 {
     // Initialize Notcurses
@@ -66,17 +51,22 @@ int Game::run()
         return 1;
     }
     ncplane *stdp = notcurses_stdplane(nc);
-    // store for later renders
     g_nc = nc;
     g_stdp = stdp;
 
     // Make sure our target area fits in the terminal
     unsigned termh = 0, termw = 0;
     ncplane_dim_yx(stdp, &termh, &termw);
-    if (height > termh || width > termw)
+    // Adaptive sizing: prefer double-width cells, fall back to single-width if needed.
+    const int HUDW_CHECK = 24;                      // keep in sync with render()
+    const int boardTW_double = 2 * (width - 1) + 1; // xscale=2
+    const int boardTW_single = width;               // xscale=1
+    // Fatal only if even single-width cannot fit, or height cannot fit
+    if ((int)height > (int)termh || (boardTW_single + 1 + HUDW_CHECK) > (int)termw)
     {
         ncplane_putstr_yx(stdp, 0, 0, "Terminal too small for configured game size.");
-        ncplane_putstr_yx(stdp, 1, 0, "Resize terminal or adjust width/height.");
+        std::string hint = std::string("Need at least ") + std::to_string(height) + " rows x " + std::to_string(boardTW_single + 1 + HUDW_CHECK) + " cols.";
+        ncplane_putstr_yx(stdp, 1, 0, hint.c_str());
         notcurses_render(nc);
         notcurses_stop(nc);
         return 1;
@@ -163,97 +153,7 @@ void Game::processInput()
                 continue;
             }
 
-            if (dialogType == DialogType::EnterSize)
-            {
-                // Initialize entries if empty
-                if (widthEntry.empty())
-                    widthEntry = std::to_string(width);
-                if (heightEntry.empty())
-                    heightEntry = std::to_string(height);
-
-                // Navigate between fields
-                if (key == NCKEY_LEFT || key == NCKEY_UP)
-                {
-                    sizeFieldIdx = (sizeFieldIdx + 1) % 2; // toggle
-                    continue;
-                }
-                if (key == NCKEY_RIGHT || key == NCKEY_DOWN)
-                {
-                    sizeFieldIdx = (sizeFieldIdx + 1) % 2; // toggle
-                    continue;
-                }
-                // Backspace
-                if (key == 127 || key == 8)
-                {
-                    std::string &field = (sizeFieldIdx == 0 ? widthEntry : heightEntry);
-                    if (!field.empty())
-                        field.pop_back();
-                    continue;
-                }
-                // Digits
-                if (key >= '0' && key <= '9')
-                {
-                    std::string &field = (sizeFieldIdx == 0 ? widthEntry : heightEntry);
-                    if ((int)field.size() < 3)
-                        field.push_back(static_cast<char>(key));
-                    continue;
-                }
-                // Confirm
-                if (key == '\n' || key == NCKEY_ENTER)
-                {
-                    // Parse and validate
-                    int newW = width;
-                    int newH = height;
-                    try
-                    {
-                        if (!widthEntry.empty())
-                            newW = std::stoi(widthEntry);
-                    }
-                    catch (...)
-                    {
-                    }
-                    try
-                    {
-                        if (!heightEntry.empty())
-                            newH = std::stoi(heightEntry);
-                    }
-                    catch (...)
-                    {
-                    }
-                    sizeError = false;
-                    sizeErrorMsg.clear();
-                    if (newW < minWidth || newH < minHeight)
-                    {
-                        sizeError = true;
-                        sizeErrorMsg = "Too small. Min " + std::to_string(minWidth) + "x" + std::to_string(minHeight) + ".";
-                        continue;
-                    }
-                    if (newW <= newH)
-                    {
-                        sizeError = true;
-                        sizeErrorMsg = "Require m > n (width > height).";
-                        continue;
-                    }
-                    // Check terminal size
-                    unsigned ph = 0, pw = 0;
-                    ncplane_dim_yx(g_stdp, &ph, &pw);
-                    if ((unsigned)newH > ph || (unsigned)newW > pw)
-                    {
-                        sizeError = true;
-                        sizeErrorMsg = "Doesn't fit terminal. Reduce size.";
-                        continue;
-                    }
-                    // Apply and reset game
-                    width = newW;
-                    height = newH;
-                    reset();
-                    closeDialog();
-                    paused = false; // start game after size confirmed
-                    continue;
-                }
-                // ignore other keys
-                continue;
-            }
+            // (EnterSize dialog removed)
 
             int maxIdx = (dialogType == DialogType::Pause ? 2 : 1);
             if (key == NCKEY_UP || key == NCKEY_LEFT)
@@ -421,13 +321,16 @@ void Game::render() const
     unsigned ph = 0, pw = 0;
     ncplane_dim_yx(g_stdp, &ph, &pw);
     const int HUDW = 24; // fixed side panel width
+    // Decide horizontal scaling based on available width: prefer 2, else 1
+    int xscale = ((2 * (width - 1) + 1) + 1 + HUDW) <= (int)pw ? 2 : 1;
+    const int boardTW = xscale * (width - 1) + 1; // terminal columns occupied by the board
     int oy = (int)ph / 2 - height / 2;
     if (oy < 0)
         oy = 0;
-    int ox = (int)pw / 2 - (width + HUDW + 1) / 2;
+    int ox = (int)pw / 2 - (boardTW + HUDW + 1) / 2;
     if (ox < 0)
         ox = 0;
-    int hx = ox + width + 1; // HUD x
+    int hx = ox + boardTW + 1; // HUD x
 
     // Draw board border with UTF-8 double lines and gradient color
     const char *hline = "═";
@@ -451,21 +354,21 @@ void Game::render() const
     ncplane_putstr_yx(g_stdp, oy + 0, ox + 0, tl);
     grad(1.0f, cr, cg, cb);
     set_fg(g_stdp, cr, cg, cb);
-    ncplane_putstr_yx(g_stdp, oy + 0, ox + width - 1, tr);
+    ncplane_putstr_yx(g_stdp, oy + 0, ox + boardTW - 1, tr);
     grad(0.0f, cr, cg, cb);
     set_fg(g_stdp, cr, cg, cb);
     ncplane_putstr_yx(g_stdp, oy + height - 1, ox + 0, bl);
     grad(1.0f, cr, cg, cb);
     set_fg(g_stdp, cr, cg, cb);
-    ncplane_putstr_yx(g_stdp, oy + height - 1, ox + width - 1, br);
-    // top/bottom
-    for (int x = 1; x < width - 1; ++x)
+    ncplane_putstr_yx(g_stdp, oy + height - 1, ox + boardTW - 1, br);
+    // top/bottom across terminal columns
+    for (int tx = 1; tx < boardTW - 1; ++tx)
     {
-        float t = (float)x / (float)(width - 1);
+        float t = (float)tx / (float)(boardTW - 1);
         grad(t, cr, cg, cb);
         set_fg(g_stdp, cr, cg, cb);
-        ncplane_putstr_yx(g_stdp, oy + 0, ox + x, hline);
-        ncplane_putstr_yx(g_stdp, oy + height - 1, ox + x, hline);
+        ncplane_putstr_yx(g_stdp, oy + 0, ox + tx, hline);
+        ncplane_putstr_yx(g_stdp, oy + height - 1, ox + tx, hline);
     }
     // sides
     for (int y = 1; y < height - 1; ++y)
@@ -476,7 +379,7 @@ void Game::render() const
         ncplane_putstr_yx(g_stdp, oy + y, ox + 0, vline);
         grad(1.0f - t, cr, cg, cb);
         set_fg(g_stdp, cr, cg, cb);
-        ncplane_putstr_yx(g_stdp, oy + y, ox + width - 1, vline);
+        ncplane_putstr_yx(g_stdp, oy + y, ox + boardTW - 1, vline);
     }
 
     // Subtle grid inside the board (checker pattern) to make cells visible
@@ -491,7 +394,9 @@ void Game::render() const
             uint8_t gg = alt ? 75 : 60;
             uint8_t gb = alt ? 85 : 70;
             set_fg(g_stdp, gr, gg, gb);
-            ncplane_putstr_yx(g_stdp, oy + y, ox + x, "·");
+            int tx = ox + x * xscale;
+            for (int k = 0; k < xscale; ++k)
+                ncplane_putstr_yx(g_stdp, oy + y, tx + k, "·");
         }
     }
 
@@ -569,7 +474,11 @@ void Game::render() const
     // Fruit (solid circle)
     const auto &fp = fruit.position();
     set_fg(g_stdp, 255, 80, 80);
-    ncplane_putstr_yx(g_stdp, oy + fp.y, ox + fp.x, "●");
+    {
+        int ftx = ox + fp.x * xscale;
+        for (int k = 0; k < xscale; ++k)
+            ncplane_putstr_yx(g_stdp, oy + fp.y, ftx + k, "●");
+    }
 
     // Snake with connected glyphs and directional head + multi-stop gradient
     const auto &segs = snake.segments();
@@ -735,7 +644,9 @@ void Game::render() const
             }
             }
         }
-        ncplane_putstr_yx(g_stdp, oy + c.y, ox + c.x, glyph);
+        int sx = ox + c.x * xscale;
+        for (int k = 0; k < xscale; ++k)
+            ncplane_putstr_yx(g_stdp, oy + c.y, sx + k, glyph);
     }
 
     // Modal dialog (Pause, GameOver, or EnterName)
@@ -744,7 +655,7 @@ void Game::render() const
         int drows = 7;
         int dcols = 40;
         int dy = oy + height / 2 - drows / 2;
-        int dx = ox + width / 2 - dcols / 2;
+        int dx = ox + boardTW / 2 - dcols / 2;
         if (dy < 1)
             dy = 1;
         if (dx < 1)
@@ -772,8 +683,6 @@ void Game::render() const
             title = "Enter Player Name";
         else if (dialogType == DialogType::Pause)
             title = "Pause";
-        else if (dialogType == DialogType::EnterSize)
-            title = "Board Size (m x n)";
         else
             title = "Game Over";
 
@@ -781,7 +690,7 @@ void Game::render() const
         set_fg(g_stdp, 120, 200, 255);
         ncplane_putstr_yx(g_stdp, dy + 1, tx, title.c_str());
 
-        // For EnterName / EnterSize, show input controls and instructions
+        // For EnterName, show input controls and instructions
         if (dialogType == DialogType::EnterName)
         {
             set_fg(g_stdp, 200, 200, 200);
@@ -792,33 +701,6 @@ void Game::render() const
             if ((int)shown.size() > dcols - 6)
                 shown = shown.substr(0, dcols - 6);
             ncplane_putstr_yx(g_stdp, dy + 4, dx + 3, shown.c_str());
-        }
-        else if (dialogType == DialogType::EnterSize)
-        {
-            // Initialize string fields for display
-            std::string wstr = widthEntry.empty() ? std::to_string(width) : widthEntry;
-            std::string hstr = heightEntry.empty() ? std::to_string(height) : heightEntry;
-            set_fg(g_stdp, 200, 200, 200);
-            ncplane_putstr_yx(g_stdp, dy + 2, dx + 3, "Enter board size where m > n:");
-            // Width (m)
-            set_fg(g_stdp, (sizeFieldIdx == 0) ? 255 : 180, (sizeFieldIdx == 0) ? 255 : 180, (sizeFieldIdx == 0) ? 255 : 180);
-            std::string wline = std::string("m (width): ") + wstr;
-            ncplane_putstr_yx(g_stdp, dy + 3, dx + 3, wline.c_str());
-            // Height (n)
-            set_fg(g_stdp, (sizeFieldIdx == 1) ? 255 : 180, (sizeFieldIdx == 1) ? 255 : 180, (sizeFieldIdx == 1) ? 255 : 180);
-            std::string hline = std::string("n (height): ") + hstr;
-            ncplane_putstr_yx(g_stdp, dy + 4, dx + 3, hline.c_str());
-            // Instructions / error
-            if (sizeError)
-            {
-                set_fg(g_stdp, 255, 120, 120);
-                ncplane_putstr_yx(g_stdp, dy + 5, dx + 3, sizeErrorMsg.c_str());
-            }
-            else
-            {
-                set_fg(g_stdp, 170, 170, 170);
-                ncplane_putstr_yx(g_stdp, dy + 5, dx + 3, "Type digits, arrows switch field, Enter to confirm");
-            }
         }
         else
         {
@@ -890,11 +772,6 @@ void Game::update()
     snake.move(grow);
 }
 
-void Game::gameOverScreen() const
-{
-    // Legacy blocking screen; unused in new non-blocking loop
-}
-
 void Game::reset()
 {
     score = 0;
@@ -946,15 +823,6 @@ void Game::openDialog(DialogType t)
         nameEntry.clear();
         // Pause the game while asking for the player's name
         paused = true;
-    }
-    else if (t == DialogType::EnterSize)
-    {
-        widthEntry.clear();
-        heightEntry.clear();
-        sizeFieldIdx = 0;
-        sizeError = false;
-        sizeErrorMsg.clear();
-        paused = true; // keep paused during size entry
     }
 }
 
