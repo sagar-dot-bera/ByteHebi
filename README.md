@@ -2,9 +2,7 @@
 
 ByteHebi is a Linux-only terminal Snake game built with Notcurses. It renders a colorful board with borders, a visible grid, and a side HUD for score and controls. The game opens with a name dialog and persists high scores between runs.
 
-This README has two parts:
-- For players: quick start, controls, tips
-- For developers: build, project layout, tech choices, and trade-offs
+
 
 ## For players
 
@@ -35,9 +33,9 @@ If you’ve already built it (or received a binary):
 ./snake
 ```
 
-If the terminal is too small, the game will tell you to resize.
 
----
+
+
 
 ## For developers
 
