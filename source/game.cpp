@@ -25,14 +25,15 @@ namespace
 Game::Game(int width, int height, const std::string &name)
     : width(width), height(height),
       snake(width / 2, height / 2, 3),
+      snake2(width / 2, height / 2 + 4, 3),
       fruit(width, height),
       playerName(name)
 {
     loadHighScore();
     chooseDifficulty();
-    // Ensure fruit not on snake at start
+    // Ensure fruit not on either snake at start
     fruit.respawn([&](const Point &p)
-                  { return snake.contains(p); });
+                  { return snake.contains(p) || snake2.contains(p); });
 }
 
 Game::~Game()
@@ -126,13 +127,24 @@ void Game::processInput()
             // Special-case: name entry dialog accepts text input + backspace + enter
             if (dialogType == DialogType::EnterName)
             {
-                // Enter: accept name (use default "Player" if empty)
+                // Enter: accept name
                 if (key == '\n' || key == NCKEY_ENTER)
                 {
-                    playerName = nameEntry.empty() ? std::string("Player") : nameEntry;
-                    closeDialog();
-                    // Unpause and start the game now that we have a name
-                    paused = false;
+                    if (!enteringP2Name)
+                    {
+                        playerName = nameEntry.empty() ? std::string("Player1") : nameEntry;
+                        // Now ask for P2's name
+                        enteringP2Name = true;
+                        nameEntry.clear();
+                    }
+                    else
+                    {
+                        player2Name = nameEntry.empty() ? std::string("Player2") : nameEntry;
+                        enteringP2Name = false;
+                        closeDialog();
+                        // Unpause and start the game now that we have both names
+                        paused = false;
+                    }
                     continue;
                 }
                 // Backspace / delete
@@ -220,6 +232,8 @@ void Game::processInput()
 
         auto handle_dir = [&](Direction d)
         { if (!paused && !over) snake.setDirection(d); };
+        auto handle_dir2 = [&](Direction d)
+        { if (!paused && !over) snake2.setDirection(d); };
 
         if (key == NCKEY_UP)
         {
@@ -239,19 +253,19 @@ void Game::processInput()
         }
         else if (key == 'w' || key == 'W')
         {
-            handle_dir(Direction::Up);
+            handle_dir2(Direction::Up);
         }
         else if (key == 's' || key == 'S')
         {
-            handle_dir(Direction::Down);
+            handle_dir2(Direction::Down);
         }
         else if (key == 'a' || key == 'A')
         {
-            handle_dir(Direction::Left);
+            handle_dir2(Direction::Left);
         }
         else if (key == 'd' || key == 'D')
         {
-            handle_dir(Direction::Right);
+            handle_dir2(Direction::Right);
         }
         else if (key == 'q' || key == 'Q')
         {
@@ -450,26 +464,34 @@ void Game::render() const
     }
     // HUD content
     set_fg(g_stdp, 120, 200, 255);
-    ncplane_putstr_yx(g_stdp, oy + 1, hx + 2, "Player:");
+    ncplane_putstr_yx(g_stdp, oy + 1, hx + 2, "P1 (Arrows):");
     set_fg(g_stdp, 255, 255, 255);
-    ncplane_putstr_yx(g_stdp, oy + 1, hx + 10, playerName.c_str());
+    ncplane_putstr_yx(g_stdp, oy + 1, hx + 14, playerName.c_str());
     set_fg(g_stdp, 255, 215, 0);
-    ncplane_putstr_yx(g_stdp, oy + 3, hx + 2, "Score:");
+    ncplane_putstr_yx(g_stdp, oy + 2, hx + 2, "Score:");
     set_fg(g_stdp, 255, 255, 255);
-    ncplane_putstr_yx(g_stdp, oy + 3, hx + 10, std::to_string(score).c_str());
+    ncplane_putstr_yx(g_stdp, oy + 2, hx + 10, std::to_string(score).c_str());
+    set_fg(g_stdp, 120, 200, 255);
+    ncplane_putstr_yx(g_stdp, oy + 4, hx + 2, "P2 (WASD):");
+    set_fg(g_stdp, 255, 255, 255);
+    ncplane_putstr_yx(g_stdp, oy + 4, hx + 12, player2Name.c_str());
+    set_fg(g_stdp, 255, 215, 0);
+    ncplane_putstr_yx(g_stdp, oy + 5, hx + 2, "Score:");
+    set_fg(g_stdp, 255, 255, 255);
+    ncplane_putstr_yx(g_stdp, oy + 5, hx + 10, std::to_string(score2).c_str());
     set_fg(g_stdp, 0, 255, 180);
-    ncplane_putstr_yx(g_stdp, oy + 5, hx + 2, "High:");
+    ncplane_putstr_yx(g_stdp, oy + 7, hx + 2, "High:");
     set_fg(g_stdp, 255, 255, 255);
-    ncplane_putstr_yx(g_stdp, oy + 5, hx + 10, std::to_string(highScore).c_str());
+    ncplane_putstr_yx(g_stdp, oy + 7, hx + 10, std::to_string(highScore).c_str());
     set_fg(g_stdp, 200, 200, 200);
-    ncplane_putstr_yx(g_stdp, oy + 7, hx + 2, "Controls:");
+    ncplane_putstr_yx(g_stdp, oy + 9, hx + 2, "Controls:");
     set_fg(g_stdp, 180, 180, 180);
-    ncplane_putstr_yx(g_stdp, oy + 8, hx + 2, "Arrows/WASD move");
-    ncplane_putstr_yx(g_stdp, oy + 9, hx + 2, "p/space pause");
-    ncplane_putstr_yx(g_stdp, oy + 10, hx + 2, "q quit");
+    ncplane_putstr_yx(g_stdp, oy + 10, hx + 2, "Arrows:P1  WASD:P2");
+    ncplane_putstr_yx(g_stdp, oy + 11, hx + 2, "p/space pause");
+    ncplane_putstr_yx(g_stdp, oy + 12, hx + 2, "q quit");
     // Optional hint for glyph styles
     set_fg(g_stdp, 170, 170, 170);
-    ncplane_putstr_yx(g_stdp, oy + 12, hx + 2, "g: change snake style");
+    ncplane_putstr_yx(g_stdp, oy + 13, hx + 2, "g: change snake style");
 
     // Fruit (solid circle)
     const auto &fp = fruit.position();
@@ -480,174 +502,117 @@ void Game::render() const
             ncplane_putstr_yx(g_stdp, oy + fp.y, ftx + k, "●");
     }
 
-    // Snake with connected glyphs and directional head + multi-stop gradient
-    const auto &segs = snake.segments();
-    int nseg = (int)segs.size();
-    // Color gradient: lime (head) -> yellow (mid) -> cyan (tail)
-    auto sgrad = [&](float t, uint8_t &r, uint8_t &g, uint8_t &b)
+    // Helper to draw one snake with a given color gradient base
+    auto drawSnake = [&](const Snake &sn, uint8_t hr, uint8_t hg, uint8_t hb)
     {
-        int r0 = 80, g0 = 255, b0 = 120; // lime
-        int r1 = 255, g1 = 220, b1 = 0;  // yellow
-        int r2 = 0, g2 = 220, b2 = 255;  // cyan
-        if (t <= 0.5f)
+        const auto &segs = sn.segments();
+        int nseg = (int)segs.size();
+        for (int i = 0; i < nseg; ++i)
         {
-            float u = t * 2.0f;
-            r = (uint8_t)(r0 + (int)((r1 - r0) * u));
-            g = (uint8_t)(g0 + (int)((g1 - g0) * u));
-            b = (uint8_t)(b0 + (int)((b1 - b0) * u));
-        }
-        else
-        {
-            float u = (t - 0.5f) * 2.0f;
-            r = (uint8_t)(r1 + (int)((r2 - r1) * u));
-            g = (uint8_t)(g1 + (int)((g2 - g1) * u));
-            b = (uint8_t)(b1 + (int)((b2 - b1) * u));
+            const Point &c = segs[i];
+            float t = (float)i / std::max(1, nseg - 1);
+            // fade from given head color to dimmer tail
+            uint8_t r = (uint8_t)(hr * (1.0f - t * 0.6f));
+            uint8_t g = (uint8_t)(hg * (1.0f - t * 0.6f));
+            uint8_t b = (uint8_t)(hb * (1.0f - t * 0.6f));
+            set_fg(g_stdp, r, g, b);
+            const char *glyph = "■";
+            if (i == 0)
+            {
+                switch (sn.getDirection())
+                {
+                case Direction::Up:    glyph = "▲"; break;
+                case Direction::Down:  glyph = "▼"; break;
+                case Direction::Left:  glyph = "◀"; break;
+                case Direction::Right: glyph = "▶"; break;
+                }
+            }
+            else if (i == nseg - 1)
+            {
+                glyph = "•";
+            }
+            else
+            {
+                const Point &p = segs[i - 1];
+                const Point &n = segs[i + 1];
+                bool up    = (p.y < c.y) || (n.y < c.y);
+                bool down  = (p.y > c.y) || (n.y > c.y);
+                bool left  = (p.x < c.x) || (n.x < c.x);
+                bool right = (p.x > c.x) || (n.x > c.x);
+                switch (snakeStyle)
+                {
+                case SnakeGlyphStyle::Light:
+                    if ((left && right) && !(up || down))  glyph = "─";
+                    else if ((up && down) && !(left || right)) glyph = "│";
+                    else if (left && up)   glyph = "┘";
+                    else if (left && down) glyph = "┐";
+                    else if (right && up)  glyph = "└";
+                    else if (right && down) glyph = "┌";
+                    else glyph = "■";
+                    break;
+                case SnakeGlyphStyle::Heavy:
+                    if ((left && right) && !(up || down))  glyph = "━";
+                    else if ((up && down) && !(left || right)) glyph = "┃";
+                    else if (left && up)   glyph = "┛";
+                    else if (left && down) glyph = "┓";
+                    else if (right && up)  glyph = "┗";
+                    else if (right && down) glyph = "┏";
+                    else glyph = "■";
+                    break;
+                case SnakeGlyphStyle::Rounded:
+                    if ((left && right) && !(up || down))  glyph = "─";
+                    else if ((up && down) && !(left || right)) glyph = "│";
+                    else if (left && up)   glyph = "╯";
+                    else if (left && down) glyph = "╮";
+                    else if (right && up)  glyph = "╰";
+                    else if (right && down) glyph = "╭";
+                    else glyph = "■";
+                    break;
+                case SnakeGlyphStyle::Scales:
+                    glyph = ((i & 1) == 0) ? "▚" : "▞";
+                    break;
+                case SnakeGlyphStyle::DoubleLine:
+                    if ((left && right) && !(up || down))  glyph = "═";
+                    else if ((up && down) && !(left || right)) glyph = "║";
+                    else if (left && up)   glyph = "╝";
+                    else if (left && down) glyph = "╗";
+                    else if (right && up)  glyph = "╚";
+                    else if (right && down) glyph = "╔";
+                    else glyph = "■";
+                    break;
+                case SnakeGlyphStyle::Block:
+                    glyph = "█";
+                    break;
+                case SnakeGlyphStyle::Arrow:
+                {
+                    int dx = n.x - c.x;
+                    int dy = n.y - c.y;
+                    if (dx > 0)      glyph = "▷";
+                    else if (dx < 0) glyph = "◁";
+                    else if (dy > 0) glyph = "▽";
+                    else if (dy < 0) glyph = "△";
+                    else             glyph = "■";
+                    break;
+                }
+                case SnakeGlyphStyle::Dotted:
+                    glyph = (i % 3 == 0) ? "●" : (i % 3 == 1 ? "•" : "·");
+                    break;
+                case SnakeGlyphStyle::Braille:
+                {
+                    static const char *pat[] = {"⣿", "⣾", "⣷", "⣯", "⣟"};
+                    glyph = pat[i % 5];
+                    break;
+                }
+                }
+            }
+            int sx = ox + c.x * xscale;
+            for (int k = 0; k < xscale; ++k)
+                ncplane_putstr_yx(g_stdp, oy + c.y, sx + k, glyph);
         }
     };
-    for (int i = 0; i < nseg; ++i)
-    {
-        const Point &c = segs[i];
-        float t = (float)i / std::max(1, nseg - 1); // 0=head .. 1=tail
-        uint8_t r, g, b;
-        sgrad(t, r, g, b);
-        set_fg(g_stdp, r, g, b);
-        const char *glyph = "■";
-        if (i == 0)
-        {
-            // head based on current direction
-            switch (snake.getDirection())
-            {
-            case Direction::Up:
-                glyph = "▲";
-                break;
-            case Direction::Down:
-                glyph = "▼";
-                break;
-            case Direction::Left:
-                glyph = "◀";
-                break;
-            case Direction::Right:
-                glyph = "▶";
-                break;
-            }
-        }
-        else if (i == nseg - 1)
-        {
-            // tail dot
-            glyph = "•";
-        }
-        else
-        {
-            const Point &p = segs[i - 1];
-            const Point &n = segs[i + 1];
-            bool up = (p.y < c.y) || (n.y < c.y);
-            bool down = (p.y > c.y) || (n.y > c.y);
-            bool left = (p.x < c.x) || (n.x < c.x);
-            bool right = (p.x > c.x) || (n.x > c.x);
-            switch (snakeStyle)
-            {
-            case SnakeGlyphStyle::Light:
-                if ((left && right) && !(up || down))
-                    glyph = "─";
-                else if ((up && down) && !(left || right))
-                    glyph = "│";
-                else if ((left && up))
-                    glyph = "┘"; // connects left+up
-                else if ((left && down))
-                    glyph = "┐"; // connects left+down
-                else if ((right && up))
-                    glyph = "└"; // connects right+up
-                else if ((right && down))
-                    glyph = "┌"; // connects right+down
-                else
-                    glyph = "■";
-                break;
-            case SnakeGlyphStyle::Heavy:
-                if ((left && right) && !(up || down))
-                    glyph = "━";
-                else if ((up && down) && !(left || right))
-                    glyph = "┃";
-                else if ((left && up))
-                    glyph = "┛";
-                else if ((left && down))
-                    glyph = "┓";
-                else if ((right && up))
-                    glyph = "┗";
-                else if ((right && down))
-                    glyph = "┏";
-                else
-                    glyph = "■";
-                break;
-            case SnakeGlyphStyle::Rounded:
-                if ((left && right) && !(up || down))
-                    glyph = "─";
-                else if ((up && down) && !(left || right))
-                    glyph = "│";
-                else if ((left && up))
-                    glyph = "╯";
-                else if ((left && down))
-                    glyph = "╮";
-                else if ((right && up))
-                    glyph = "╰";
-                else if ((right && down))
-                    glyph = "╭";
-                else
-                    glyph = "■";
-                break;
-            case SnakeGlyphStyle::Scales:
-                // ignore connectivity; use a scale tile pattern
-                glyph = ((i & 1) == 0) ? "▚" : "▞";
-                break;
-            case SnakeGlyphStyle::DoubleLine:
-                if ((left && right) && !(up || down))
-                    glyph = "═";
-                else if ((up && down) && !(left || right))
-                    glyph = "║";
-                else if ((left && up))
-                    glyph = "╝";
-                else if ((left && down))
-                    glyph = "╗";
-                else if ((right && up))
-                    glyph = "╚";
-                else if ((right && down))
-                    glyph = "╔";
-                else
-                    glyph = "■";
-                break;
-            case SnakeGlyphStyle::Block:
-                glyph = "█";
-                break;
-            case SnakeGlyphStyle::Arrow:
-            {
-                int dx = n.x - c.x;
-                int dy = n.y - c.y;
-                if (dx > 0)
-                    glyph = "▷";
-                else if (dx < 0)
-                    glyph = "◁";
-                else if (dy > 0)
-                    glyph = "▽";
-                else if (dy < 0)
-                    glyph = "△";
-                else
-                    glyph = "■";
-                break;
-            }
-            case SnakeGlyphStyle::Dotted:
-                glyph = (i % 3 == 0) ? "●" : (i % 3 == 1 ? "•" : "·");
-                break;
-            case SnakeGlyphStyle::Braille:
-            {
-                static const char *pat[] = {"⣿", "⣾", "⣷", "⣯", "⣟"};
-                glyph = pat[i % 5];
-                break;
-            }
-            }
-        }
-        int sx = ox + c.x * xscale;
-        for (int k = 0; k < xscale; ++k)
-            ncplane_putstr_yx(g_stdp, oy + c.y, sx + k, glyph);
-    }
+    // P1: green/lime gradient, P2: orange/red gradient
+    drawSnake(snake,  80, 255, 120);
+    drawSnake(snake2, 255, 140, 0);
 
     // Modal dialog (Pause, GameOver, or EnterName)
     if (dialogOpen)
@@ -680,7 +645,7 @@ void Game::render() const
 
         std::string title;
         if (dialogType == DialogType::EnterName)
-            title = "Enter Player Name";
+            title = enteringP2Name ? "Enter Player 2 Name" : "Enter Player 1 Name";
         else if (dialogType == DialogType::Pause)
             title = "Pause";
         else
@@ -707,9 +672,12 @@ void Game::render() const
             // For Pause and GameOver, draw options. For GameOver also show the score.
             if (dialogType == DialogType::GameOver)
             {
+                set_fg(g_stdp, 255, 100, 100);
+                std::string whoLost = (loser == 1) ? "Player 1 lost!" : (loser == 2) ? "Player 2 lost!" : "";
+                ncplane_putstr_yx(g_stdp, dy + 2, dx + 3, whoLost.c_str());
                 set_fg(g_stdp, 200, 200, 0);
-                std::string scoreLine = std::string("Score: ") + std::to_string(score);
-                ncplane_putstr_yx(g_stdp, dy + 2, dx + 3, scoreLine.c_str());
+                std::string scoreLine = std::string("P1:") + std::to_string(score) + std::string("  P2:") + std::to_string(score2);
+                ncplane_putstr_yx(g_stdp, dy + 3, dx + 3, scoreLine.c_str());
             }
 
             auto draw_option = [&](int row, int idx, const char *label)
@@ -739,52 +707,75 @@ void Game::render() const
 
 void Game::update()
 {
-    // Compute next head and collisions
-    Point next = snake.nextHead();
+    Point next  = snake.nextHead();
+    Point next2 = snake2.nextHead();
 
-    // Walls
+    // Check P1 collisions
+    bool p1dead = false;
     if (next.x <= 0 || next.x >= width - 1 || next.y <= 0 || next.y >= height - 1)
+        p1dead = true;
+    if (!p1dead && snake.hitsSelf(next))
+        p1dead = true;
+    if (!p1dead && snake2.contains(next))
+        p1dead = true;
+
+    // Check P2 collisions
+    bool p2dead = false;
+    if (next2.x <= 0 || next2.x >= width - 1 || next2.y <= 0 || next2.y >= height - 1)
+        p2dead = true;
+    if (!p2dead && snake2.hitsSelf(next2))
+        p2dead = true;
+    if (!p2dead && snake.contains(next2))
+        p2dead = true;
+
+    if (p1dead || p2dead)
     {
+        loser = p1dead ? 1 : 2;
         over = true;
         openDialog(DialogType::GameOver);
         return;
     }
 
-    // Self
-    if (snake.hitsSelf(next))
+    // Fruit
+    bool grow  = (next  == fruit.position());
+    bool grow2 = (next2 == fruit.position());
+    if (grow)
     {
-        over = true;
-        openDialog(DialogType::GameOver);
-        return;
-    }
-
-    bool grow = false;
-    if (next == fruit.position())
-    {
-        grow = true;
         score += 10;
         if (score > highScore)
             highScore = score;
         fruit.respawn([&](const Point &p)
-                      { return snake.contains(p) || p == next; });
+                      { return snake.contains(p) || snake2.contains(p) || p == next; });
+    }
+    else if (grow2)
+    {
+        score2 += 10;
+        if (score2 > highScore)
+            highScore = score2;
+        fruit.respawn([&](const Point &p)
+                      { return snake.contains(p) || snake2.contains(p) || p == next2; });
     }
 
     snake.move(grow);
+    snake2.move(grow2);
 }
 
 void Game::reset()
 {
     score = 0;
+    score2 = 0;
+    loser = 0;
     over = false;
     exitRequested = false;
     dialogOpen = false;
     dialogType = DialogType::None;
     dialogIndex = 0;
     paused = false;
-    snake = Snake(width / 2, height / 2, 3);
+    snake  = Snake(width / 2, height / 2, 3);
+    snake2 = Snake(width / 2, height / 2 + 4, 3);
     fruit = Fruit(width, height);
     fruit.respawn([&](const Point &p)
-                  { return snake.contains(p); });
+                  { return snake.contains(p) || snake2.contains(p); });
 }
 
 void Game::chooseDifficulty()
