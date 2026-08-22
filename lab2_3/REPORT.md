@@ -48,8 +48,8 @@ Reports: `lab2_3/audits/main.md` (the code as you received it) and `lab2_3/audit
 |---|---|---|---|
 | 1 | 961a2db | docs: add ubiquitous language glossary | glossary |
 | 2 | ce8a41e | docs: add code smell audits | smell report |
-| 3 | 54d4499 | refactor: extract game input handling | **the refactor, alone** |
-| 4 | daca9e8 | feat: restore multiplayer game | **the feature, alone** |
+| 3 | 54d4499 | refactor: extract game input handling | the refactor alone |
+| 4 | daca9e8 | feat: restore multiplayer game | the feature alone |
 
 ---
 
