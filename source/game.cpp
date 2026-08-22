@@ -120,104 +120,115 @@ void Game::processInput()
         if (key == (uint32_t)-1)
             break; // error
 
-        // If a modal dialog is open, handle its input
         if (dialogOpen)
         {
-            // Special-case: name entry dialog accepts text input + backspace + enter
-            if (dialogType == DialogType::EnterName)
-            {
-                // Enter: accept name (use default "Player" if empty)
-                if (key == '\n' || key == NCKEY_ENTER)
-                {
-                    playerName = nameEntry.empty() ? std::string("Player") : nameEntry;
-                    closeDialog();
-                    // Unpause and start the game now that we have a name
-                    paused = false;
-                    continue;
-                }
-                // Backspace / delete
-                if (key == 127 || key == 8)
-                {
-                    if (!nameEntry.empty())
-                        nameEntry.pop_back();
-                    continue;
-                }
-                // Printable ASCII characters
-                if (key >= 32 && key < 128)
-                {
-                    if ((int)nameEntry.size() < nameMaxLen)
-                        nameEntry.push_back(static_cast<char>(key));
-                    continue;
-                }
-                // other keys are ignored while entering name
-                continue;
-            }
-
-            // (EnterSize dialog removed)
-
-            int maxIdx = (dialogType == DialogType::Pause ? 2 : 1);
-            if (key == NCKEY_UP || key == NCKEY_LEFT)
-            {
-                dialogIndex = (dialogIndex - 1 + (maxIdx + 1)) % (maxIdx + 1);
-                continue;
-            }
-            if (key == NCKEY_DOWN || key == NCKEY_RIGHT)
-            {
-                dialogIndex = (dialogIndex + 1) % (maxIdx + 1);
-                continue;
-            }
-            if (key == 'q' || key == 'Q')
-            {
-                exitRequested = true;
-                continue;
-            }
-            if (key == ' ' || key == '\n' || key == NCKEY_ENTER)
-            {
-                if (dialogType == DialogType::Pause)
-                {
-                    if (dialogIndex == 0)
-                    {
-                        paused = false;
-                        closeDialog();
-                    }
-                    else if (dialogIndex == 1)
-                    {
-                        reset();
-                        paused = false;
-                        closeDialog();
-                    }
-                    else if (dialogIndex == 2)
-                    {
-                        exitRequested = true;
-                    }
-                }
-                else if (dialogType == DialogType::GameOver)
-                {
-                    if (dialogIndex == 0)
-                    {
-                        reset();
-                        closeDialog();
-                    }
-                    else if (dialogIndex == 1)
-                    {
-                        exitRequested = true;
-                    }
-                }
-                continue;
-            }
-            if (key == 'p' || key == 'P')
-            {
-                if (dialogType == DialogType::Pause)
-                {
-                    paused = false;
-                    closeDialog();
-                }
-                continue;
-            }
-            // ignore other keys while dialog is open
+            handleDialogInput(key);
             continue;
         }
 
+        handleGameInput(key);
+    }
+}
+
+void Game::handleDialogInput(uint32_t key)
+{
+    // Special-case: name entry dialog accepts text input + backspace + enter
+    if (dialogType == DialogType::EnterName)
+    {
+        handleNameEntryInput(key);
+        return;
+    }
+
+    // (EnterSize dialog removed)
+
+    int maxIdx = (dialogType == DialogType::Pause ? 2 : 1);
+    if (key == NCKEY_UP || key == NCKEY_LEFT)
+    {
+        dialogIndex = (dialogIndex - 1 + (maxIdx + 1)) % (maxIdx + 1);
+        return;
+    }
+    if (key == NCKEY_DOWN || key == NCKEY_RIGHT)
+    {
+        dialogIndex = (dialogIndex + 1) % (maxIdx + 1);
+        return;
+    }
+    if (key == 'q' || key == 'Q')
+    {
+        exitRequested = true;
+        return;
+    }
+    if (key == ' ' || key == '\n' || key == NCKEY_ENTER)
+    {
+        if (dialogType == DialogType::Pause)
+        {
+            if (dialogIndex == 0)
+            {
+                paused = false;
+                closeDialog();
+            }
+            else if (dialogIndex == 1)
+            {
+                reset();
+                paused = false;
+                closeDialog();
+            }
+            else if (dialogIndex == 2)
+            {
+                exitRequested = true;
+            }
+        }
+        else if (dialogType == DialogType::GameOver)
+        {
+            if (dialogIndex == 0)
+            {
+                reset();
+                closeDialog();
+            }
+            else if (dialogIndex == 1)
+            {
+                exitRequested = true;
+            }
+        }
+        return;
+    }
+    if (key == 'p' || key == 'P')
+    {
+        if (dialogType == DialogType::Pause)
+        {
+            paused = false;
+            closeDialog();
+        }
+    }
+}
+
+void Game::handleNameEntryInput(uint32_t key)
+{
+    // Enter: accept name (use default "Player" if empty)
+    if (key == '\n' || key == NCKEY_ENTER)
+    {
+        playerName = nameEntry.empty() ? std::string("Player") : nameEntry;
+        closeDialog();
+        // Unpause and start the game now that we have a name
+        paused = false;
+        return;
+    }
+    // Backspace / delete
+    if (key == 127 || key == 8)
+    {
+        if (!nameEntry.empty())
+            nameEntry.pop_back();
+        return;
+    }
+    // Printable ASCII characters
+    if (key >= 32 && key < 128)
+    {
+        if ((int)nameEntry.size() < nameMaxLen)
+            nameEntry.push_back(static_cast<char>(key));
+    }
+}
+
+void Game::handleGameInput(uint32_t key)
+{
         auto handle_dir = [&](Direction d)
         { if (!paused && !over) snake.setDirection(d); };
 
@@ -309,7 +320,6 @@ void Game::processInput()
                 break;
             }
         }
-    }
 }
 
 void Game::render() const

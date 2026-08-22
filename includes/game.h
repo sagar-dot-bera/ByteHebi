@@ -1,6 +1,7 @@
 #pragma once
 #include "snake.h"
 #include "fruit.h"
+#include <cstdint>
 #include <string>
 
 class Game
@@ -34,6 +35,9 @@ private:
         EnterName
     };
     void processInput();
+    void handleDialogInput(uint32_t key);
+    void handleNameEntryInput(uint32_t key);
+    void handleGameInput(uint32_t key);
     void update();
     void render() const;
 
