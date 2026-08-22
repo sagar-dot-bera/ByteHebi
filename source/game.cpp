@@ -25,14 +25,15 @@ namespace
 Game::Game(int width, int height, const std::string &name)
     : width(width), height(height),
       snake(width / 2, height / 2, 3),
+      snake2(width / 2, height / 2 + 4, 3),
       fruit(width, height),
       playerName(name)
 {
     loadHighScore();
     chooseDifficulty();
-    // Ensure fruit not on snake at start
+    // Ensure fruit not on either snake at start
     fruit.respawn([&](const Point &p)
-                  { return snake.contains(p); });
+                  { return snake.contains(p) || snake2.contains(p); });
 }
 
 Game::~Game()
@@ -203,13 +204,23 @@ void Game::handleDialogInput(uint32_t key)
 
 void Game::handleNameEntryInput(uint32_t key)
 {
-    // Enter: accept name (use default "Player" if empty)
+    // Enter: accept each player's name before starting the game
     if (key == '\n' || key == NCKEY_ENTER)
     {
-        playerName = nameEntry.empty() ? std::string("Player") : nameEntry;
-        closeDialog();
-        // Unpause and start the game now that we have a name
-        paused = false;
+        if (!enteringP2Name)
+        {
+            playerName = nameEntry.empty() ? std::string("Player1") : nameEntry;
+            enteringP2Name = true;
+            nameEntry.clear();
+        }
+        else
+        {
+            player2Name = nameEntry.empty() ? std::string("Player2") : nameEntry;
+            enteringP2Name = false;
+            closeDialog();
+            // Unpause and start the game now that both names are entered
+            paused = false;
+        }
         return;
     }
     // Backspace / delete
@@ -231,6 +242,8 @@ void Game::handleGameInput(uint32_t key)
 {
         auto handle_dir = [&](Direction d)
         { if (!paused && !over) snake.setDirection(d); };
+        auto handle_dir2 = [&](Direction d)
+        { if (!paused && !over) snake2.setDirection(d); };
 
         if (key == NCKEY_UP)
         {
@@ -250,19 +263,19 @@ void Game::handleGameInput(uint32_t key)
         }
         else if (key == 'w' || key == 'W')
         {
-            handle_dir(Direction::Up);
+            handle_dir2(Direction::Up);
         }
         else if (key == 's' || key == 'S')
         {
-            handle_dir(Direction::Down);
+            handle_dir2(Direction::Down);
         }
         else if (key == 'a' || key == 'A')
         {
-            handle_dir(Direction::Left);
+            handle_dir2(Direction::Left);
         }
         else if (key == 'd' || key == 'D')
         {
-            handle_dir(Direction::Right);
+            handle_dir2(Direction::Right);
         }
         else if (key == 'q' || key == 'Q')
         {
@@ -460,26 +473,34 @@ void Game::render() const
     }
     // HUD content
     set_fg(g_stdp, 120, 200, 255);
-    ncplane_putstr_yx(g_stdp, oy + 1, hx + 2, "Player:");
+    ncplane_putstr_yx(g_stdp, oy + 1, hx + 2, "P1 (Arrows):");
     set_fg(g_stdp, 255, 255, 255);
-    ncplane_putstr_yx(g_stdp, oy + 1, hx + 10, playerName.c_str());
+    ncplane_putstr_yx(g_stdp, oy + 1, hx + 14, playerName.c_str());
     set_fg(g_stdp, 255, 215, 0);
-    ncplane_putstr_yx(g_stdp, oy + 3, hx + 2, "Score:");
+    ncplane_putstr_yx(g_stdp, oy + 2, hx + 2, "Score:");
     set_fg(g_stdp, 255, 255, 255);
-    ncplane_putstr_yx(g_stdp, oy + 3, hx + 10, std::to_string(score).c_str());
+    ncplane_putstr_yx(g_stdp, oy + 2, hx + 10, std::to_string(score).c_str());
+    set_fg(g_stdp, 120, 200, 255);
+    ncplane_putstr_yx(g_stdp, oy + 4, hx + 2, "P2 (WASD):");
+    set_fg(g_stdp, 255, 255, 255);
+    ncplane_putstr_yx(g_stdp, oy + 4, hx + 12, player2Name.c_str());
+    set_fg(g_stdp, 255, 215, 0);
+    ncplane_putstr_yx(g_stdp, oy + 5, hx + 2, "Score:");
+    set_fg(g_stdp, 255, 255, 255);
+    ncplane_putstr_yx(g_stdp, oy + 5, hx + 10, std::to_string(score2).c_str());
     set_fg(g_stdp, 0, 255, 180);
-    ncplane_putstr_yx(g_stdp, oy + 5, hx + 2, "High:");
+    ncplane_putstr_yx(g_stdp, oy + 7, hx + 2, "High:");
     set_fg(g_stdp, 255, 255, 255);
-    ncplane_putstr_yx(g_stdp, oy + 5, hx + 10, std::to_string(highScore).c_str());
+    ncplane_putstr_yx(g_stdp, oy + 7, hx + 10, std::to_string(highScore).c_str());
     set_fg(g_stdp, 200, 200, 200);
-    ncplane_putstr_yx(g_stdp, oy + 7, hx + 2, "Controls:");
+    ncplane_putstr_yx(g_stdp, oy + 9, hx + 2, "Controls:");
     set_fg(g_stdp, 180, 180, 180);
-    ncplane_putstr_yx(g_stdp, oy + 8, hx + 2, "Arrows/WASD move");
-    ncplane_putstr_yx(g_stdp, oy + 9, hx + 2, "p/space pause");
-    ncplane_putstr_yx(g_stdp, oy + 10, hx + 2, "q quit");
+    ncplane_putstr_yx(g_stdp, oy + 10, hx + 2, "Arrows:P1  WASD:P2");
+    ncplane_putstr_yx(g_stdp, oy + 11, hx + 2, "p/space pause");
+    ncplane_putstr_yx(g_stdp, oy + 12, hx + 2, "q quit");
     // Optional hint for glyph styles
     set_fg(g_stdp, 170, 170, 170);
-    ncplane_putstr_yx(g_stdp, oy + 12, hx + 2, "g: change snake style");
+    ncplane_putstr_yx(g_stdp, oy + 13, hx + 2, "g: change snake style");
 
     // Fruit (solid circle)
     const auto &fp = fruit.position();
@@ -659,6 +680,28 @@ void Game::render() const
             ncplane_putstr_yx(g_stdp, oy + c.y, sx + k, glyph);
     }
 
+    // Player 2 snake uses a distinct color without changing Player 1's glyph style.
+    const auto &segs2 = snake2.segments();
+    for (int i = 0; i < (int)segs2.size(); ++i)
+    {
+        const Point &c = segs2[i];
+        set_fg(g_stdp, 255, 140, 0);
+        const char *glyph = "■";
+        if (i == 0)
+        {
+            switch (snake2.getDirection())
+            {
+            case Direction::Up: glyph = "▲"; break;
+            case Direction::Down: glyph = "▼"; break;
+            case Direction::Left: glyph = "◀"; break;
+            case Direction::Right: glyph = "▶"; break;
+            }
+        }
+        int sx = ox + c.x * xscale;
+        for (int k = 0; k < xscale; ++k)
+            ncplane_putstr_yx(g_stdp, oy + c.y, sx + k, glyph);
+    }
+
     // Modal dialog (Pause, GameOver, or EnterName)
     if (dialogOpen)
     {
@@ -690,7 +733,7 @@ void Game::render() const
 
         std::string title;
         if (dialogType == DialogType::EnterName)
-            title = "Enter Player Name";
+            title = enteringP2Name ? "Enter Player 2 Name" : "Enter Player 1 Name";
         else if (dialogType == DialogType::Pause)
             title = "Pause";
         else
@@ -717,9 +760,12 @@ void Game::render() const
             // For Pause and GameOver, draw options. For GameOver also show the score.
             if (dialogType == DialogType::GameOver)
             {
+                set_fg(g_stdp, 255, 100, 100);
+                std::string whoLost = (loser == 1) ? "Player 1 lost!" : (loser == 2) ? "Player 2 lost!" : "";
+                ncplane_putstr_yx(g_stdp, dy + 2, dx + 3, whoLost.c_str());
                 set_fg(g_stdp, 200, 200, 0);
-                std::string scoreLine = std::string("Score: ") + std::to_string(score);
-                ncplane_putstr_yx(g_stdp, dy + 2, dx + 3, scoreLine.c_str());
+                std::string scoreLine = std::string("P1:") + std::to_string(score) + std::string("  P2:") + std::to_string(score2);
+                ncplane_putstr_yx(g_stdp, dy + 3, dx + 3, scoreLine.c_str());
             }
 
             auto draw_option = [&](int row, int idx, const char *label)
@@ -749,42 +795,57 @@ void Game::render() const
 
 void Game::update()
 {
-    // Compute next head and collisions
     Point next = snake.nextHead();
+    Point next2 = snake2.nextHead();
 
-    // Walls
-    if (next.x <= 0 || next.x >= width - 1 || next.y <= 0 || next.y >= height - 1)
+    bool p1dead = next.x <= 0 || next.x >= width - 1 || next.y <= 0 || next.y >= height - 1;
+    if (!p1dead && snake.hitsSelf(next))
+        p1dead = true;
+    if (!p1dead && snake2.contains(next))
+        p1dead = true;
+
+    bool p2dead = next2.x <= 0 || next2.x >= width - 1 || next2.y <= 0 || next2.y >= height - 1;
+    if (!p2dead && snake2.hitsSelf(next2))
+        p2dead = true;
+    if (!p2dead && snake.contains(next2))
+        p2dead = true;
+
+    if (p1dead || p2dead)
     {
+        loser = p1dead ? 1 : 2;
         over = true;
         openDialog(DialogType::GameOver);
         return;
     }
 
-    // Self
-    if (snake.hitsSelf(next))
+    bool grow = next == fruit.position();
+    bool grow2 = next2 == fruit.position();
+    if (grow)
     {
-        over = true;
-        openDialog(DialogType::GameOver);
-        return;
-    }
-
-    bool grow = false;
-    if (next == fruit.position())
-    {
-        grow = true;
         score += 10;
         if (score > highScore)
             highScore = score;
         fruit.respawn([&](const Point &p)
-                      { return snake.contains(p) || p == next; });
+                      { return snake.contains(p) || snake2.contains(p) || p == next; });
+    }
+    else if (grow2)
+    {
+        score2 += 10;
+        if (score2 > highScore)
+            highScore = score2;
+        fruit.respawn([&](const Point &p)
+                      { return snake.contains(p) || snake2.contains(p) || p == next2; });
     }
 
     snake.move(grow);
+    snake2.move(grow2);
 }
 
 void Game::reset()
 {
     score = 0;
+    score2 = 0;
+    loser = 0;
     over = false;
     exitRequested = false;
     dialogOpen = false;
@@ -792,9 +853,10 @@ void Game::reset()
     dialogIndex = 0;
     paused = false;
     snake = Snake(width / 2, height / 2, 3);
+    snake2 = Snake(width / 2, height / 2 + 4, 3);
     fruit = Fruit(width, height);
     fruit.respawn([&](const Point &p)
-                  { return snake.contains(p); });
+                  { return snake.contains(p) || snake2.contains(p); });
 }
 
 void Game::chooseDifficulty()
