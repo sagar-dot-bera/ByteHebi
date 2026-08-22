@@ -1,6 +1,7 @@
 #pragma once
 #include "snake.h"
 #include "fruit.h"
+#include <cstdint>
 #include <string>
 
 class Game
@@ -34,6 +35,9 @@ private:
         EnterName
     };
     void processInput();
+    void handleDialogInput(uint32_t key);
+    void handleNameEntryInput(uint32_t key);
+    void handleGameInput(uint32_t key);
     void update();
     void render() const;
 
@@ -47,8 +51,11 @@ private:
     int width;
     int height;
     Snake snake;
+    Snake snake2;
     Fruit fruit;
     int score{0};
+    int score2{0};
+    int loser{0}; // 0=none, 1=P1, 2=P2
     bool over{false};
     bool exitRequested{false};
     bool paused{false};
@@ -56,6 +63,8 @@ private:
     DialogType dialogType{DialogType::None};
     int dialogIndex{0};
     std::string playerName{"Player"};
+    std::string player2Name{"Player2"};
+    bool enteringP2Name{false};
     // Temporary storage for name entry when EnterName dialog is open
     std::string nameEntry{""};
     int nameMaxLen{24};
