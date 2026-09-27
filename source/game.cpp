@@ -1,5 +1,6 @@
 // Snake game using Notcurses for rendering and input (Linux-only)
 #include "game.h"
+#include "rules.h"
 #include <fstream>
 #include <chrono>
 #include <thread>
@@ -29,7 +30,7 @@ Game::Game(int width, int height, const std::string &name)
       playerName(name)
 {
     loadHighScore();
-    chooseDifficulty();
+    // chooseDifficulty();
     // Ensure fruit not on snake at start
     fruit.respawn([&](const Point &p)
                   { return snake.contains(p); });
@@ -739,37 +740,15 @@ void Game::render() const
 
 void Game::update()
 {
-    // Compute next head and collisions
-    Point next = snake.nextHead();
-
-    // Walls
-    if (next.x <= 0 || next.x >= width - 1 || next.y <= 0 || next.y >= height - 1)
+    TickResult result = advance(snake, fruit.position(), width, height, score, highScore,
+                                [&](const Point &next)
+                                { fruit.respawn([&](const Point &p)
+                                                { return snake.contains(p) || p == next; }); });
+    if (result == TickResult::Died)
     {
         over = true;
         openDialog(DialogType::GameOver);
-        return;
     }
-
-    // Self
-    if (snake.hitsSelf(next))
-    {
-        over = true;
-        openDialog(DialogType::GameOver);
-        return;
-    }
-
-    bool grow = false;
-    if (next == fruit.position())
-    {
-        grow = true;
-        score += 10;
-        if (score > highScore)
-            highScore = score;
-        fruit.respawn([&](const Point &p)
-                      { return snake.contains(p) || p == next; });
-    }
-
-    snake.move(grow);
 }
 
 void Game::reset()
