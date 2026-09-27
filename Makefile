@@ -9,7 +9,7 @@ ifeq ($(strip $(NC_LIBS)),)
 NC_LIBS := -lnotcurses -lnotcurses-core
 endif
 
-SRC := source/main.cpp source/game.cpp source/snake.cpp source/fruit.cpp
+SRC := source/main.cpp source/game.cpp source/snake.cpp source/fruit.cpp source/rules.cpp
 BIN := snake
 
 all: $(BIN)
